@@ -15,6 +15,7 @@ import (
 	"github.com/sealjay/mcp-whatsapp/internal/client"
 	"github.com/sealjay/mcp-whatsapp/internal/daemon"
 	mcpsrv "github.com/sealjay/mcp-whatsapp/internal/mcp"
+	"github.com/sealjay/mcp-whatsapp/internal/media"
 	"github.com/sealjay/mcp-whatsapp/internal/security"
 	"github.com/sealjay/mcp-whatsapp/internal/store"
 )
@@ -77,6 +78,22 @@ func runServe(storeDir string, redactor *security.Redactor, readOnly, keepRevoke
 	// to drop outbound attachments.
 	fmt.Fprintf(os.Stderr, "media root: %s (drop outbound files here)\n", allowedMediaRoot)
 
+	// A bad transcription setting must not keep the daemon from serving
+	// messages: warn and leave transcription off.
+	whisper, err := media.WhisperConfigFromEnv(os.Getenv)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warn: voice-note transcription disabled: %v\n", err)
+		whisper = media.WhisperConfig{}
+	}
+	if whisper.Enabled() {
+		if err := whisper.Check(); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: voice-note transcription: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "voice-note transcription: whisper.cpp (%s, model %s, language %s)\n",
+				filepath.Base(whisper.Bin), filepath.Base(whisper.Model), whisper.Lang)
+		}
+	}
+
 	st, err := store.Open(storeDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open store: %v\n", err)
@@ -91,6 +108,7 @@ func runServe(storeDir string, redactor *security.Redactor, readOnly, keepRevoke
 		AllowedMediaRoot: allowedMediaRoot,
 		Redactor:         redactor,
 		KeepRevoked:      keepRevoked,
+		Whisper:          whisper,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "init client: %v\n", err)

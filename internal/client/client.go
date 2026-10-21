@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/mdp/qrterminal"
@@ -18,6 +19,7 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 
+	"github.com/sealjay/mcp-whatsapp/internal/media"
 	"github.com/sealjay/mcp-whatsapp/internal/ratelimit"
 	"github.com/sealjay/mcp-whatsapp/internal/security"
 	"github.com/sealjay/mcp-whatsapp/internal/store"
@@ -39,6 +41,9 @@ type Config struct {
 	// deleted for everyone. By default they are blanked; revoked_at is
 	// recorded either way.
 	KeepRevoked bool
+	// Whisper configures local voice-note transcription (transcribe_media).
+	// The zero value leaves transcription off.
+	Whisper media.WhisperConfig
 }
 
 // Client wraps a whatsmeow.Client together with the message cache and logger.
@@ -54,6 +59,13 @@ type Client struct {
 	limiter          *ratelimit.Limiter
 	health           healthTracker
 	keepRevoked      bool
+	whisper          media.WhisperConfig
+	// transcribe runs the transcription; nil means media.Transcribe. Tests
+	// swap it out.
+	transcribe func(context.Context, media.WhisperConfig, string) (string, error)
+	// transcribeMu runs one transcription at a time: whisper.cpp already
+	// uses several cores, parallel runs only slow each other down.
+	transcribeMu sync.Mutex
 }
 
 // New constructs a Client. It sets the latest WhatsApp version best-effort,
@@ -138,6 +150,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		redactor:         redactor,
 		limiter:          limiter,
 		keepRevoked:      cfg.KeepRevoked,
+		whisper:          cfg.Whisper,
 	}, nil
 }
 

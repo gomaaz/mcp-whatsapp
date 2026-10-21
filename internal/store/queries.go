@@ -9,15 +9,16 @@ import (
 	"time"
 )
 
-// listMessageColumns is the 20-column projection shared by ListMessages,
-// messageContext and queryContextWindow. It must be selected FROM
-// listMessageFrom, which provides the chats and quoted aliases. The quoted.*
-// columns describe the cached original of a reply and are NULL when it is not
-// a reply or the original is not cached.
+// listMessageColumns is the 23-column projection shared by ListMessages,
+// messageContext and queryContextWindow, scanned by scanListMessageRow. It
+// must be selected FROM listMessageFrom, which provides the chats and quoted
+// aliases. The quoted.* columns describe the cached original of a reply and
+// are NULL when it is not a reply or the original is not cached.
 const listMessageColumns = "messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.rowid, " +
 	"messages.quoted_message_id, messages.quoted_sender, messages.quoted_text, messages.is_forwarded, " +
 	"quoted.content, quoted.media_type, quoted.filename, quoted.sender, quoted.is_from_me, " +
-	"messages.edited_at, messages.revoked_at"
+	"messages.edited_at, messages.revoked_at, " +
+	"messages.audio_seconds, messages.is_voice_note, messages.transcript"
 
 // listMessageFrom joins each message to its chat and, for replies, to the
 // quoted original in the same chat when it is cached.
@@ -88,8 +89,10 @@ func (s *Store) ListMessages(ctx context.Context, params ListMessagesParams) ([]
 		args = append(args, params.ChatJID)
 	}
 	if params.Query != "" {
-		whereClauses = append(whereClauses, "LOWER(messages.content) LIKE LOWER(?)")
-		args = append(args, "%"+params.Query+"%")
+		// Cached voice-note transcripts are searched like message text.
+		pattern := "%" + params.Query + "%"
+		whereClauses = append(whereClauses, "(LOWER(messages.content) LIKE LOWER(?) OR LOWER(messages.transcript) LIKE LOWER(?))")
+		args = append(args, pattern, pattern)
 	}
 	if params.FromMe != nil {
 		whereClauses = append(whereClauses, "messages.is_from_me = ?")
@@ -457,7 +460,7 @@ func (s *Store) queryContextWindow(ctx context.Context, chatJID string, anchorRo
 	return out, rows.Err()
 }
 
-// scanListMessageRow scans the 20-column listMessageColumns projection used
+// scanListMessageRow scans the 23-column listMessageColumns projection used
 // by list_messages and the context window queries.
 func (s *Store) scanListMessageRow(row interface {
 	Scan(dest ...any) error
@@ -483,11 +486,15 @@ func (s *Store) scanListMessageRow(row interface {
 		origIsFromMe  sql.NullBool
 		editedAt      sql.NullTime
 		revokedAt     sql.NullTime
+		audioSeconds  sql.NullInt64
+		isVoiceNote   sql.NullBool
+		transcript    sql.NullString
 	)
 	if err := row.Scan(&ts, &sender, &chatName, &content, &isFromMe, &chatJID, &id, &mediaType, &rowID,
 		&quotedID, &quotedSender, &quotedText, &isForwarded,
 		&origContent, &origMediaType, &origFilename, &origSender, &origIsFromMe,
-		&editedAt, &revokedAt); err != nil {
+		&editedAt, &revokedAt,
+		&audioSeconds, &isVoiceNote, &transcript); err != nil {
 		return Message{}, err
 	}
 	m := Message{
@@ -503,7 +510,12 @@ func (s *Store) scanListMessageRow(row interface {
 		QuotedSender:    quotedSender.String,
 		QuotedText:      quotedText.String,
 		IsForwarded:     isForwarded.Bool,
+		IsVoiceNote:     isVoiceNote.Bool,
+		Transcript:      transcript.String,
 		rowID:           rowID,
+	}
+	if audioSeconds.Valid && audioSeconds.Int64 > 0 {
+		m.AudioSeconds = uint32(audioSeconds.Int64)
 	}
 	if editedAt.Valid {
 		t := editedAt.Time.UTC()

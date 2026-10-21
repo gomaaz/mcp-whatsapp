@@ -356,7 +356,7 @@ func (c *Client) persistSent(ctx context.Context, recipientJID types.JID, msgID,
 			storedMediaKey, storedFileSHA256, storedFileEnc, storedFileLength = extractMediaInfo(msg)
 	}
 
-	err := c.store.StoreMessage(ctx, store.Message{
+	sent := store.Message{
 		ID:         msgID,
 		ChatJID:    chatJID,
 		Sender:     ourJID,
@@ -367,7 +367,11 @@ func (c *Client) persistSent(ctx context.Context, recipientJID types.JID, msgID,
 		Filename:   storedFilename,
 		URL:        storedURL,
 		DirectPath: storedDirectPath,
-	}, storedMediaKey, storedFileSHA256, storedFileEnc, storedFileLength)
+	}
+	if mediaPath != "" {
+		sent.AudioSeconds, sent.IsVoiceNote = extractAudioInfo(msg)
+	}
+	err := c.store.StoreMessage(ctx, sent, storedMediaKey, storedFileSHA256, storedFileEnc, storedFileLength)
 	if err != nil {
 		c.log.Warnf("Failed to store sent message: %v", err)
 		return

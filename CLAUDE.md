@@ -9,7 +9,7 @@ cmd/whatsapp-mcp/       login, serve, smoke subcommands
 internal/client/        whatsmeow client wrapper (send, download, events, history, features)
 internal/daemon/        HTTP server, pairing state machine, /pair endpoint
 internal/mcp/           mark3labs/mcp-go v1 server + tool registrations
-internal/media/         ogg analysis + ffmpeg shell-out
+internal/media/         ogg analysis + ffmpeg and whisper.cpp shell-out
 internal/security/      path allowlisting, filename sanitisation, log redaction
 internal/store/         SQLite cache + queries + LID resolution + formatters
 scripts/mdtest-parity.sh  whatsmeow API drift canary
@@ -47,7 +47,7 @@ make upgrade-check
 
 ## Feature implementation map
 
-Tool surface is 43 tools, registered from `internal/mcp/tools.go` + `tools_groups.go` + `tools_media.go` + `tools_privacy.go`.
+Tool surface is 44 tools, registered from `internal/mcp/tools.go` + `tools_groups.go` + `tools_media.go` + `tools_privacy.go`.
 
 1. **LID Resolution** — `internal/store/lid.go`. Normalises `@lid` JIDs to real phone numbers via the `whatsmeow_lid_map` table.
 2. **Sent message storage** — `internal/client/send.go` persists outgoing messages after `SendMessage` returns.

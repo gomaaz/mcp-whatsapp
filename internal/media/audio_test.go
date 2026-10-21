@@ -13,6 +13,11 @@ import (
 var fixturePath string
 
 func TestMain(m *testing.M) {
+	// When started under a fake tool name (see transcribe_test.go), this
+	// binary plays ffmpeg or whisper-cli instead of running the tests.
+	if code, ok := runFakeTool(os.Args); ok {
+		os.Exit(code)
+	}
 	// Try to generate a 3-second 440Hz ogg/opus sample for AnalyzeOggOpus /
 	// ConvertToOpusOgg tests. If ffmpeg isn't present, leave fixturePath
 	// empty and tests will skip.

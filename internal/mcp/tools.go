@@ -17,6 +17,7 @@ var readOnlyTools = map[string]bool{
 	"get_chat":             true,
 	"get_message_context":  true,
 	"download_media":       true,
+	"transcribe_media":     true,
 	"request_sync":         true,
 	"get_status":           true,
 	"pairing_status":       true,

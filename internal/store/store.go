@@ -75,6 +75,15 @@ type Message struct {
 	// not. Unless the daemon runs with -keep-revoked, the stored text and
 	// media keys of a revoked message are blanked (see ApplyRevoke).
 	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	// AudioSeconds is the duration WhatsApp reported for an audio message,
+	// 0 when unknown or not audio.
+	AudioSeconds uint32 `json:"audio_seconds,omitempty"`
+	// IsVoiceNote marks an audio message recorded as a voice note (PTT)
+	// rather than sent as an audio file.
+	IsVoiceNote bool `json:"is_voice_note,omitempty"`
+	// Transcript is the cached local transcription of an audio message
+	// (see transcribe_media); empty until one was made.
+	Transcript string `json:"transcript,omitempty"`
 	// rowID is the SQLite rowid of the cached row, set by the list/context
 	// queries. It breaks ties between messages that share a timestamp
 	// (a screenshot and its follow-up text sent in the same second).
@@ -208,7 +217,8 @@ func (s *Store) StoreChat(jid, name string, lastMessageTime time.Time) error {
 // A message delivered again (history sync re-sending a cached message) must
 // not undo what the sender did to it later: a revoked row is left as it is,
 // and an edited row keeps its edited text unless m carries a newer edit
-// (m.EditedAt set and not before the stored one).
+// (m.EditedAt set and not before the stored one). A cached transcript is
+// carried over, since the same message ID carries the same audio.
 func (s *Store) StoreMessage(ctx context.Context, m Message, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
 	if m.Content == "" && m.MediaType == "" {
 		return nil
@@ -220,14 +230,15 @@ func (s *Store) StoreMessage(ctx context.Context, m Message, mediaKey, fileSHA25
 	defer func() { _ = tx.Rollback() }()
 
 	var (
-		oldContent sql.NullString
-		oldEdited  sql.NullTime
-		oldRevoked sql.NullTime
+		oldContent    sql.NullString
+		oldEdited     sql.NullTime
+		oldRevoked    sql.NullTime
+		oldTranscript sql.NullString
 	)
 	err = tx.QueryRowContext(ctx,
-		"SELECT content, edited_at, revoked_at FROM messages WHERE id = ? AND chat_jid = ?",
+		"SELECT content, edited_at, revoked_at, transcript FROM messages WHERE id = ? AND chat_jid = ?",
 		m.ID, m.ChatJID,
-	).Scan(&oldContent, &oldEdited, &oldRevoked)
+	).Scan(&oldContent, &oldEdited, &oldRevoked, &oldTranscript)
 	switch {
 	case err == sql.ErrNoRows:
 	case err != nil:
@@ -239,15 +250,19 @@ func (s *Store) StoreMessage(ctx context.Context, m Message, mediaKey, fileSHA25
 		editedAt := oldEdited.Time
 		m.EditedAt = &editedAt
 	}
+	if m.Transcript == "" {
+		m.Transcript = oldTranscript.String
+	}
 
 	if _, err := tx.ExecContext(ctx,
 		`INSERT OR REPLACE INTO messages
 		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length,
-		 quoted_message_id, quoted_sender, quoted_text, is_forwarded, edited_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 quoted_message_id, quoted_sender, quoted_text, is_forwarded, edited_at, audio_seconds, is_voice_note, transcript)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.ChatJID, m.Sender, m.Content, dbTime(m.Timestamp), m.IsFromMe,
 		m.MediaType, m.Filename, m.URL, m.DirectPath, mediaKey, fileSHA256, fileEncSHA256, fileLength,
 		m.QuotedMessageID, m.QuotedSender, m.QuotedText, m.IsForwarded, nullableDBTime(m.EditedAt),
+		m.AudioSeconds, m.IsVoiceNote, nullableString(m.Transcript),
 	); err != nil {
 		return err
 	}
@@ -402,6 +417,9 @@ CREATE TABLE IF NOT EXISTS messages (
 	is_forwarded BOOLEAN DEFAULT 0,
 	edited_at TIMESTAMP,
 	revoked_at TIMESTAMP,
+	audio_seconds INTEGER DEFAULT 0,
+	is_voice_note BOOLEAN DEFAULT 0,
+	transcript TEXT,
 	PRIMARY KEY (id, chat_jid),
 	FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 );
@@ -468,4 +486,7 @@ var addedMessageColumns = []struct{ name, def string }{
 	{"is_forwarded", "BOOLEAN DEFAULT 0"},
 	{"edited_at", "TIMESTAMP"},
 	{"revoked_at", "TIMESTAMP"},
+	{"audio_seconds", "INTEGER DEFAULT 0"},
+	{"is_voice_note", "BOOLEAN DEFAULT 0"},
+	{"transcript", "TEXT"},
 }

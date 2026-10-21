@@ -16,7 +16,8 @@ const maxQuoteRunes = 200
 // download_media. The time is printed in UTC as RFC 3339 with a "Z" suffix,
 // the same form list_messages accepts for after/before. Messages the sender
 // deleted for everyone are marked "[deleted by sender]", edited ones
-// "[edited]".
+// "[edited]". Audio carries its length ("[voice note, 45 s]") and, once
+// transcribe_media has run, its cached transcript.
 func (s *Store) FormatMessage(ctx context.Context, m Message, showChatInfo bool) string {
 	var b strings.Builder
 
@@ -36,7 +37,7 @@ func (s *Store) FormatMessage(ctx context.Context, m Message, showChatInfo bool)
 
 	contentPrefix := ""
 	if m.MediaType != "" {
-		contentPrefix = "[" + m.MediaType + "] "
+		contentPrefix = "[" + mediaLabel(m) + "] "
 	}
 
 	var senderName string
@@ -66,9 +67,33 @@ func (s *Store) FormatMessage(ctx context.Context, m Message, showChatInfo bool)
 	}
 	b.WriteString(contentPrefix)
 	b.WriteString(m.Content)
+	if t := strings.Join(strings.Fields(m.Transcript), " "); t != "" {
+		if m.Content != "" {
+			b.WriteString(" ")
+		}
+		b.WriteString("transcript: ")
+		b.WriteString(strconv.Quote(t))
+	}
 	b.WriteString("\n")
 
 	return b.String()
+}
+
+// mediaLabel names the media of a message for its line marker. Audio says
+// whether it is a voice note and, when WhatsApp reported it, how long it
+// is: "voice note, 45 s", "audio, 3 s", "voice note".
+func mediaLabel(m Message) string {
+	if m.MediaType != "audio" {
+		return m.MediaType
+	}
+	label := "audio"
+	if m.IsVoiceNote {
+		label = "voice note"
+	}
+	if m.AudioSeconds > 0 {
+		label += ", " + strconv.FormatUint(uint64(m.AudioSeconds), 10) + " s"
+	}
+	return label
 }
 
 // formatQuote renders the reply marker of a message, e.g.

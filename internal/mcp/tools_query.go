@@ -81,7 +81,7 @@ func (s *Server) registerListMessages() {
 		mcp.WithString("before", mcp.Description("keep messages strictly before this time (exclusive), so `before=2026-10-21` ends with 20 October UTC; "+timeFilterDesc)),
 		mcp.WithString("sender_phone_number", mcp.Description("filter to messages sent by this phone or JID ("+jidDesc+")")),
 		mcp.WithString("chat_jid", mcp.Description("filter to messages in this chat ("+jidDesc+")")),
-		mcp.WithString("query", mcp.Description("case-insensitive substring to match within message body")),
+		mcp.WithString("query", mcp.Description("case-insensitive substring to match within message body or a cached voice-note transcript (see transcribe_media)")),
 		mcp.WithBoolean("from_me", mcp.Description("direction filter: true keeps only messages you sent, false only incoming ones; omit for both")),
 		mcp.WithString("media_type", mcp.Enum(listMessagesMediaTypes...), mcp.Description("keep only messages with this attachment type: `image`, `video`, `audio`, `document`, or `none` for text-only; omit for all")),
 		mcp.WithBoolean("exclude_groups", mcp.DefaultBool(false), mcp.Description("if true, skip messages from group chats (defaults to false)")),

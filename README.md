@@ -5,7 +5,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/Sealjay/mcp-whatsapp)](https://goreportcard.com/report/github.com/Sealjay/mcp-whatsapp)
 [![Go 1.26+](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![MCP](https://img.shields.io/badge/MCP-protocol-6366f1)](https://modelcontextprotocol.io/)
-[![43 tools](https://img.shields.io/badge/tools-43-blue)]()
+[![44 tools](https://img.shields.io/badge/tools-44-blue)]()
 [![whatsmeow](https://img.shields.io/badge/whatsmeow-multidevice-25D366?logo=whatsapp&logoColor=white)](https://github.com/tulir/whatsmeow)
 [![Sealjay/mcp-whatsapp MCP server](https://glama.ai/mcp/servers/Sealjay/mcp-whatsapp/badges/score.svg?)](https://glama.ai/mcp/servers/Sealjay/mcp-whatsapp)
 [![GitHub issues](https://img.shields.io/github/issues/Sealjay/mcp-whatsapp)](https://github.com/Sealjay/mcp-whatsapp/issues)
@@ -20,7 +20,7 @@ This started as a fork of [lharries/whatsapp-mcp](https://github.com/lharries/wh
 - **Sent-message storage** — outgoing messages are persisted locally so conversation history stays complete.
 - **Disappearing-message timers** — outgoing messages inherit the group chat's ephemeral timer automatically.
 - **Targeted history sync** — on-demand per-chat backfill via the `request_sync` tool.
-- **Extended tool surface** — 43 tools (see below): reactions, replies, edits, revoke, mark-read, typing, is-on-whatsapp, full group admin, blocklist, polls (create + vote + tally), contact cards, view-once flag, presence, privacy settings, and the profile "About" text.
+- **Extended tool surface** — 44 tools (see below): reactions, replies, edits, revoke, mark-read, typing, is-on-whatsapp, full group admin, blocklist, polls (create + vote + tally), contact cards, view-once flag, presence, privacy settings, the profile "About" text, and local voice-note transcription.
 - **Single-instance enforcement** — a `flock(2)` on `store/.lock` prevents two `serve` processes racing on the same SQLite files.
 
 ## Setup
@@ -89,8 +89,12 @@ Paths outside the root, including symlinks that resolve outside it, are rejected
 - `-allow-remote`: bind a non-loopback address. Requires `WHATSAPP_MCP_TOKEN`, a bearer token for `/mcp` and `/pair/*`; `serve` exits without it.
 - `WHATSAPP_MCP_MEDIA_ROOT`: the file allowlist root above.
 - `WHATSAPP_MCP_DEBUG=1` or `-debug`: verbose logs (see [Debug logging](#debug-logging)).
-- `-read-only` (global, before the command) or `WHATSAPP_MCP_READ_ONLY=1`: register only the 16 tools without outbound effect (`search_contacts`, `list_messages`, `list_unanswered`, `list_chats`, `get_chat`, `get_message_context`, `download_media`, `request_sync`, `get_status`, `pairing_status`, `list_groups`, `get_group_info`, `get_blocklist`, `get_privacy_settings`, `get_poll_results`, `is_on_whatsapp`). Nothing that sends, edits, deletes, sends read receipts or changes groups and privacy is reachable, whatever the client calls. `get_group_invite_link` is left out because it can reset the link. An explicit flag wins over the env var, e.g. `-read-only=false`.
+- `-read-only` (global, before the command) or `WHATSAPP_MCP_READ_ONLY=1`: register only the 17 tools without outbound effect (`search_contacts`, `list_messages`, `list_unanswered`, `list_chats`, `get_chat`, `get_message_context`, `download_media`, `transcribe_media`, `request_sync`, `get_status`, `pairing_status`, `list_groups`, `get_group_info`, `get_blocklist`, `get_privacy_settings`, `get_poll_results`, `is_on_whatsapp`). Nothing that sends, edits, deletes, sends read receipts or changes groups and privacy is reachable, whatever the client calls. `get_group_invite_link` is left out because it can reset the link. An explicit flag wins over the env var, e.g. `-read-only=false`.
 - `-keep-revoked` (global, before the command) or `WHATSAPP_MCP_KEEP_REVOKED=1`: keep the text of messages their sender deleted for everyone. By default the daemon blanks the stored text and media keys of such a message and shows it as `[deleted by sender]`; with this switch the line keeps the text after the marker. Either way `revoked_at` is recorded. An explicit flag wins over the env var.
+- `WHATSAPP_MCP_WHISPER_BIN` and `WHATSAPP_MCP_WHISPER_MODEL`: turn on `transcribe_media`. The first is the [whisper.cpp](https://github.com/ggml-org/whisper.cpp) CLI (`whisper-cli`, on Windows `whisper-cli.exe`), the second a ggml model file such as `ggml-base.bin`. Transcription runs on this machine; ffmpeg must be on `PATH`. Without both variables the tool answers with an error that names them.
+- `WHATSAPP_MCP_WHISPER_LANG`: spoken language passed to whisper.cpp, e.g. `de`; default `auto` (detect).
+- `WHATSAPP_MCP_WHISPER_TIMEOUT`: time limit for converting and transcribing one message, as a duration (`90s`, `5m`) or seconds; default `5m`.
+- `WHATSAPP_MCP_WHISPER_MAX_DURATION`: longer audio is not transcribed; same format, default `15m`.
 
 ## Running the daemon
 
@@ -123,7 +127,7 @@ cmd/whatsapp-mcp/       login / serve / smoke subcommands
 internal/client/        whatsmeow client wrapper (send, download, events, history, features)
 internal/daemon/        HTTP server, pairing state machine, /pair endpoints
 internal/mcp/           mark3labs/mcp-go v1 server + tool registrations
-internal/media/         ogg parsing, waveform synthesis, ffmpeg shell-out
+internal/media/         ogg parsing, waveform synthesis, ffmpeg and whisper.cpp shell-out
 internal/security/      path allowlisting, filename sanitisation, log redaction
 internal/store/         SQLite cache, LID resolution, query layer
 ```
@@ -136,7 +140,7 @@ Edits and deletes for everyone update the cached message instead of being stored
 
 ## Tools
 
-43 tools, grouped by purpose.
+44 tools, grouped by purpose.
 
 ### Read / query
 
@@ -149,6 +153,7 @@ Edits and deletes for everyone update the cached message instead of being stored
 | `get_chat` | Chat metadata by JID |
 | `get_message_context` | Before/after window around a specific message |
 | `download_media` | Download persisted media to a local path |
+| `transcribe_media` | Transcribe a voice note or other audio message locally with whisper.cpp (see `WHATSAPP_MCP_WHISPER_*` above). The audio is fetched like `download_media`, nothing is sent to the chat. The transcript is cached: repeat calls return it straight away, `list_messages` shows it on the line (`[voice note, 45 s] transcript: "…"`) and its `query` searches it. Deleting a message for everyone also deletes its transcript unless `-keep-revoked` is set |
 | `request_sync` | Ask WhatsApp to backfill history for a chat |
 
 ### Send

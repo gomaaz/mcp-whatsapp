@@ -135,6 +135,7 @@ func (c *Client) normalizeIncomingMessage(
 		URL:        url,
 		DirectPath: directPath,
 	}
+	m.AudioSeconds, m.IsVoiceNote = extractAudioInfo(raw)
 	if ci := contextInfoOf(raw); ci != nil {
 		m.IsForwarded = ci.GetIsForwarded()
 		if quotedID := ci.GetStanzaID(); quotedID != "" {
@@ -642,6 +643,17 @@ func extractMediaInfo(msg *waProto.Message) (mediaType, filename, url, directPat
 	}
 
 	return "", "", "", "", nil, nil, nil, 0
+}
+
+// extractAudioInfo returns the duration WhatsApp reports for an audio message
+// and whether it was recorded as a voice note (PTT). Both are zero for
+// anything that is not audio.
+func extractAudioInfo(msg *waProto.Message) (seconds uint32, isVoiceNote bool) {
+	aud := msg.GetAudioMessage()
+	if aud == nil {
+		return 0, false
+	}
+	return aud.GetSeconds(), aud.GetPTT()
 }
 
 func generatedMediaFilename(prefix string, fileSHA256 []byte, extension string) string {

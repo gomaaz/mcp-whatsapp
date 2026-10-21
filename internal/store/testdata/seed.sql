@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS messages (
     is_forwarded BOOLEAN DEFAULT 0,
     edited_at TIMESTAMP,
     revoked_at TIMESTAMP,
+    audio_seconds INTEGER DEFAULT 0,
+    is_voice_note BOOLEAN DEFAULT 0,
+    transcript TEXT,
     PRIMARY KEY (id, chat_jid),
     FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 );

@@ -77,10 +77,11 @@ func (s *Store) ApplyEdit(ctx context.Context, ch MessageChange, text string) (C
 
 // ApplyRevoke marks a cached message as deleted by its sender and records
 // revoked_at. Unless keepContent is set, it also blanks the text and the
-// media download fields (url, direct path, key, hashes), so neither the text
-// nor the file of a message its author deleted can be read back. The media
-// type and file name stay, so the line still shows what kind of message it
-// was. Revoking an already revoked message keeps the first revoked_at.
+// media download fields (url, direct path, key, hashes) and any cached
+// transcript, so neither the text nor the file of a message its author
+// deleted can be read back. The media type and file name stay, so the line
+// still shows what kind of message it was. Revoking an already revoked
+// message keeps the first revoked_at.
 func (s *Store) ApplyRevoke(ctx context.Context, ch MessageChange, keepContent bool) (ChangeResult, error) {
 	target, _, err := s.changeTarget(ctx, ch)
 	if err != nil || target != ChangeApplied {
@@ -88,7 +89,7 @@ func (s *Store) ApplyRevoke(ctx context.Context, ch MessageChange, keepContent b
 	}
 	q := "UPDATE messages SET revoked_at = COALESCE(revoked_at, ?)"
 	if !keepContent {
-		q += ", content = '', url = '', direct_path = '', media_key = NULL, file_sha256 = NULL, file_enc_sha256 = NULL, file_length = 0"
+		q += ", content = '', url = '', direct_path = '', media_key = NULL, file_sha256 = NULL, file_enc_sha256 = NULL, file_length = 0, transcript = NULL"
 	}
 	q += " WHERE id = ? AND chat_jid = ?"
 	if _, err := s.db.ExecContext(ctx, q, dbTime(ch.At), ch.ID, ch.ChatJID); err != nil {

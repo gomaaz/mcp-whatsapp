@@ -14,7 +14,7 @@ import (
 
 // registerMessageTools wires message-mutation and history tools:
 // edit_message, delete_message, mark_read, mark_chat_read, request_sync,
-// download_media.
+// download_media, transcribe_media.
 func (s *Server) registerMessageTools() {
 	s.registerEditMessage()
 	s.registerDeleteMessage()
@@ -22,6 +22,7 @@ func (s *Server) registerMessageTools() {
 	s.registerMarkChatRead()
 	s.registerRequestSync()
 	s.registerDownloadMedia()
+	s.registerTranscribeMedia()
 }
 
 // -- edit_message -----------------------------------------------------------
@@ -253,5 +254,34 @@ func (s *Server) registerDownloadMedia() {
 		}
 		r := s.client.Download(ctx, a.MessageID, a.ChatJID, a.OutputPath)
 		return downloadMediaResult(r)
+	}))
+}
+
+// -- transcribe_media -------------------------------------------------------
+
+type transcribeMediaArgs struct {
+	MessageID string `json:"message_id"`
+	ChatJID   string `json:"chat_jid"`
+}
+
+func (s *Server) registerTranscribeMedia() {
+	tool := mcp.NewTool("transcribe_media",
+		mcp.WithDescription("Turn a voice note or other audio message into text locally with whisper.cpp: the audio is fetched like download_media (nothing is sent to the sender or chat), transcribed on this machine and cached, so list_messages shows the transcript on the message line and its `query` searches it. Repeat calls return the cached transcript without downloading or running anything; use download_media instead when you need the audio file itself. Needs WHATSAPP_MCP_WHISPER_BIN and WHATSAPP_MCP_WHISPER_MODEL on the daemon, otherwise it returns an error naming them. Returns a JSON object `{Success, Message, Transcript, Cached, AudioSeconds, IsVoiceNote}`; failures (not audio, not configured, too long, timeout) are returned as a tool error."),
+		mcp.WithString("message_id", mcp.Required(), mcp.Description("WhatsApp message ID of an audio message, shown as `[voice note, … s]` or `[audio]` (use `message_id` from list_messages)")),
+		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
+	)
+	s.addTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a transcribeMediaArgs) (*mcp.CallToolResult, error) {
+		if a.MessageID == "" || a.ChatJID == "" {
+			return mcp.NewToolResultError("message_id and chat_jid are required"), nil
+		}
+		r := s.client.TranscribeMedia(ctx, a.MessageID, a.ChatJID)
+		if !r.Success {
+			return mcp.NewToolResultError(r.Message), nil
+		}
+		return resultJSON(r)
 	}))
 }

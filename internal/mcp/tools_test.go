@@ -51,6 +51,7 @@ var expectedToolNames = []string{
 	"set_group_topic",
 	"set_privacy_setting",
 	"set_status_message",
+	"transcribe_media",
 	"unblock_contact",
 	"update_group_participants",
 }
@@ -118,7 +119,7 @@ func TestNewServer_RegistersAllTools(t *testing.T) {
 
 func TestNewServer_ToolCount(t *testing.T) {
 	s := NewServer(nil, nil)
-	const want = 43
+	const want = 44
 	if got := len(s.MCP().ListTools()); got != want {
 		t.Errorf("tool count = %d, want %d", got, want)
 	}
@@ -174,6 +175,7 @@ var expectedReadOnlyToolNames = []string{
 	"pairing_status",
 	"request_sync",
 	"search_contacts",
+	"transcribe_media",
 }
 
 func registeredToolNames(s *Server) []string {

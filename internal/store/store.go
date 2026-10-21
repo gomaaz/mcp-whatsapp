@@ -219,6 +219,16 @@ func (s *Store) StoreChat(jid, name string, lastMessageTime time.Time) error {
 // and an edited row keeps its edited text unless m carries a newer edit
 // (m.EditedAt set and not before the stored one). A cached transcript is
 // carried over, since the same message ID carries the same audio.
+//
+// A row can also hold an edit whose original was not cached (see
+// storeHistoryEdit in the client). Its text only survives the arrival of
+// the original when both come from the same author, by the same rule as
+// changeAllowed; otherwise the original replaces the row and its edited_at
+// is cleared. An edit (m.EditedAt set) never replaces a row of another
+// author.
+//
+// When m quotes a cached message its sender deleted, the copy of that
+// message's text embedded in m is not stored (see ApplyRevoke).
 func (s *Store) StoreMessage(ctx context.Context, m Message, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
 	if m.Content == "" && m.MediaType == "" {
 		return nil
@@ -231,27 +241,50 @@ func (s *Store) StoreMessage(ctx context.Context, m Message, mediaKey, fileSHA25
 
 	var (
 		oldContent    sql.NullString
+		oldSender     sql.NullString
+		oldFromMe     bool
 		oldEdited     sql.NullTime
 		oldRevoked    sql.NullTime
 		oldTranscript sql.NullString
 	)
 	err = tx.QueryRowContext(ctx,
-		"SELECT content, edited_at, revoked_at, transcript FROM messages WHERE id = ? AND chat_jid = ?",
+		"SELECT content, sender, is_from_me, edited_at, revoked_at, transcript FROM messages WHERE id = ? AND chat_jid = ?",
 		m.ID, m.ChatJID,
-	).Scan(&oldContent, &oldEdited, &oldRevoked, &oldTranscript)
+	).Scan(&oldContent, &oldSender, &oldFromMe, &oldEdited, &oldRevoked, &oldTranscript)
 	switch {
 	case err == sql.ErrNoRows:
 	case err != nil:
 		return err
 	case oldRevoked.Valid:
 		return nil
-	case oldEdited.Valid && (m.EditedAt == nil || m.EditedAt.Before(oldEdited.Time)):
-		m.Content = oldContent.String
-		editedAt := oldEdited.Time
-		m.EditedAt = &editedAt
+	case oldEdited.Valid || m.EditedAt != nil:
+		sameAuthor := s.changeAllowed(oldSender.String, oldFromMe, MessageChange{
+			ActorSenders: []string{m.Sender}, ActorFromMe: m.IsFromMe,
+		})
+		switch {
+		case m.EditedAt != nil && !sameAuthor:
+			return nil
+		case sameAuthor && oldEdited.Valid && (m.EditedAt == nil || m.EditedAt.Before(oldEdited.Time)):
+			m.Content = oldContent.String
+			editedAt := oldEdited.Time
+			m.EditedAt = &editedAt
+		}
 	}
 	if m.Transcript == "" {
 		m.Transcript = oldTranscript.String
+	}
+	if m.QuotedMessageID != "" && m.QuotedText != "" {
+		var quotedRevoked sql.NullTime
+		err := tx.QueryRowContext(ctx,
+			"SELECT revoked_at FROM messages WHERE id = ? AND chat_jid = ?", m.QuotedMessageID, m.ChatJID,
+		).Scan(&quotedRevoked)
+		switch {
+		case err == sql.ErrNoRows:
+		case err != nil:
+			return err
+		case quotedRevoked.Valid:
+			m.QuotedText = ""
+		}
 	}
 
 	if _, err := tx.ExecContext(ctx,

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"sort"
 	"strings"
 	"time"
 
@@ -258,10 +259,14 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 	}
 
 	for _, conversation := range historySync.Data.Conversations {
-		// Revokes are applied after the conversation's messages are stored:
-		// the payload lists newest first, so a revoke usually comes before
-		// the message it deletes.
-		var revokes []store.MessageChange
+		// Edits and revokes are applied after the conversation's messages
+		// are stored: the payload lists newest first, so a change usually
+		// comes before the message it changes. Edits then run oldest first,
+		// each through the author check in ApplyEdit.
+		var (
+			edits   []historyEdit
+			revokes []store.MessageChange
+		)
 
 		if conversation.ID == nil {
 			continue
@@ -337,10 +342,10 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 			nm.msg.ChatJID = chatJID
 
 			if hm.edited {
-				if !c.storeHistoryEdit(ctx, nm, hm) {
-					continue
-				}
-			} else if err := c.store.StoreMessage(ctx, nm.msg, nm.mediaKey, nm.fileSHA256, nm.fileEncSHA256, nm.fileLength); err != nil {
+				edits = append(edits, historyEdit{nm: nm, hm: hm})
+				continue
+			}
+			if err := c.store.StoreMessage(ctx, nm.msg, nm.mediaKey, nm.fileSHA256, nm.fileEncSHA256, nm.fileLength); err != nil {
 				c.log.Warnf("Failed to store history message: %v", err)
 				continue
 			}
@@ -354,12 +359,25 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 			}
 		}
 
+		sort.SliceStable(edits, func(i, j int) bool { return edits[i].hm.timestamp.Before(edits[j].hm.timestamp) })
+		for _, e := range edits {
+			if c.storeHistoryEdit(ctx, e.nm, e.hm) {
+				syncedCount++
+			}
+		}
 		for _, ch := range revokes {
 			c.applyRevoke(ctx, ch)
 		}
 	}
 
 	c.log.Infof("History sync complete. Stored %d messages.", syncedCount)
+}
+
+// historyEdit is an edit found in a history sync, held back until the
+// conversation's messages are stored.
+type historyEdit struct {
+	nm normalizedMessage
+	hm historyMessage
 }
 
 // historyMessage holds the fields of one history-sync message that

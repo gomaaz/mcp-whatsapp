@@ -10,6 +10,10 @@ import (
 // maxQuoteRunes caps the length of a stored quote snippet.
 const maxQuoteRunes = 200
 
+// revokedMarker marks a message its sender deleted for everyone, on its own
+// line and in the reply marker of messages that quote it.
+const revokedMarker = "[deleted by sender]"
+
 // FormatMessage renders a single message in the textual format expected by
 // downstream Claude clients. Every line carries the message ID and chat JID so
 // any message (text or media) can be passed on to get_message_context or
@@ -51,7 +55,7 @@ func (s *Store) FormatMessage(ctx context.Context, m Message, showChatInfo bool)
 	b.WriteString(senderName)
 	b.WriteString(": ")
 	if m.RevokedAt != nil {
-		b.WriteString("[deleted by sender]")
+		b.WriteString(revokedMarker)
 		if m.Content != "" || contentPrefix != "" || m.QuotedMessageID != "" || m.IsForwarded {
 			b.WriteString(" ")
 		}

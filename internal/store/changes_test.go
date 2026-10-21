@@ -393,3 +393,138 @@ func TestMigrateSchema_AddsEditRevokeColumns(t *testing.T) {
 		_ = s.Close()
 	}
 }
+
+// TestApplyEdit_IgnoresOlderEdit: edits replayed out of order (history lists
+// newest first, and a sync can replay an edit already applied live) never
+// roll the text back to an older version.
+func TestApplyEdit_IgnoresOlderEdit(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	storeChangeTarget(t, s, Message{ID: "o1", ChatJID: changeDM, Sender: "447700000001", Content: "v1"})
+	ch := MessageChange{ChatJID: changeDM, ID: "o1", ActorSenders: []string{"447700000001"}}
+
+	e1At, e2At := changeAt, changeAt.Add(time.Minute)
+	ch.At = e2At
+	if res, err := s.ApplyEdit(ctx, ch, "v3"); err != nil || res != ChangeApplied {
+		t.Fatalf("newer edit = %v, %v; want applied", res, err)
+	}
+	ch.At = e1At
+	if res, err := s.ApplyEdit(ctx, ch, "v2"); err != nil || res != ChangeStale {
+		t.Fatalf("older edit = %v, %v; want stale", res, err)
+	}
+	if r := readChangeRow(t, s, changeDM, "o1"); r.content != "v3" || !r.edited.Time.Equal(e2At) {
+		t.Errorf("after older edit: content=%q edited_at=%v, want v3 at %v", r.content, r.edited.Time, e2At)
+	}
+	// The same edit applied again is harmless.
+	ch.At = e2At
+	if res, err := s.ApplyEdit(ctx, ch, "v3"); err != nil || res != ChangeApplied {
+		t.Errorf("replayed newest edit = %v, %v; want applied", res, err)
+	}
+}
+
+// TestStoreMessage_EditRowOfOtherAuthor: a history edit whose original was
+// not cached is stored as the row under the editor's sender. When the
+// original arrives from a different author, it replaces that row; the edit
+// of a group member who did not write the message never survives as the
+// author's text.
+func TestStoreMessage_EditRowOfOtherAuthor(t *testing.T) {
+	s := openTestStore(t)
+	const alice, bob = "447700000001", "447700000002"
+	editAt := changeAt
+	forged := Message{ID: "x1", ChatJID: changeGroup, Sender: bob, Content: "Bob war hier", EditedAt: &editAt,
+		Timestamp: changeAt}
+	storeChangeTarget(t, s, forged)
+
+	original := Message{ID: "x1", ChatJID: changeGroup, Sender: alice, Content: "Alice schreibt"}
+	storeChangeTarget(t, s, original)
+	r := readChangeRow(t, s, changeGroup, "x1")
+	if r.content != "Alice schreibt" || r.edited.Valid {
+		t.Errorf("after original: content=%q edited=%v, want Alice's text unedited", r.content, r.edited.Valid)
+	}
+	var sender string
+	if err := s.db.QueryRow("SELECT sender FROM messages WHERE id = 'x1'").Scan(&sender); err != nil || sender != alice {
+		t.Errorf("sender = %q (err %v), want %s", sender, err, alice)
+	}
+
+	// Another edit by Bob, stored as a row of its own, cannot replace it.
+	later := changeAt.Add(time.Minute)
+	forged.EditedAt = &later
+	storeChangeTarget(t, s, forged)
+	if r := readChangeRow(t, s, changeGroup, "x1"); r.content != "Alice schreibt" || r.edited.Valid {
+		t.Errorf("foreign edit replaced the row: content=%q edited=%v", r.content, r.edited.Valid)
+	}
+
+	// The author's own edit stored first is kept when her original follows.
+	own := Message{ID: "x2", ChatJID: changeGroup, Sender: alice, Content: "korrigiert", EditedAt: &editAt, Timestamp: changeAt}
+	storeChangeTarget(t, s, own)
+	storeChangeTarget(t, s, Message{ID: "x2", ChatJID: changeGroup, Sender: alice, Content: "Tippfehler"})
+	if r := readChangeRow(t, s, changeGroup, "x2"); r.content != "korrigiert" || !r.edited.Valid {
+		t.Errorf("author's edit lost: content=%q edited=%v", r.content, r.edited.Valid)
+	}
+}
+
+// TestRevokedOriginal_HidesQuotedCopy: a reply carries a copy of the text it
+// quotes. Once that message is deleted by its sender, neither list_messages
+// nor get_message_context may show the copy, also when the reply is stored
+// again later (history sync).
+func TestRevokedOriginal_HidesQuotedCopy(t *testing.T) {
+	const secret = "Kontonummer DE00 1234"
+	for _, keep := range []bool{false, true} {
+		s := openTestStore(t)
+		ctx := context.Background()
+		storeChangeTarget(t, s, Message{ID: "t1", ChatJID: changeDM, Sender: "447700000001", Content: secret})
+		storeChangeTarget(t, s, Message{ID: "t2", ChatJID: changeDM, Sender: "447700000001", MediaType: "image",
+			Content: "Foto vom Vertrag", Timestamp: time.Date(2026, 3, 1, 9, 1, 0, 0, time.UTC)})
+		reply := Message{ID: "r1", ChatJID: changeDM, IsFromMe: true, Sender: "me", Content: "danke",
+			Timestamp:       time.Date(2026, 3, 1, 9, 5, 0, 0, time.UTC),
+			QuotedMessageID: "t1", QuotedSender: "447700000001", QuotedText: secret}
+		captionReply := Message{ID: "r2", ChatJID: changeDM, IsFromMe: true, Sender: "me", Content: "ok",
+			Timestamp:       time.Date(2026, 3, 1, 9, 6, 0, 0, time.UTC),
+			QuotedMessageID: "t2", QuotedSender: "447700000001", QuotedText: "[image] Foto vom Vertrag"}
+		storeChangeTarget(t, s, reply)
+		storeChangeTarget(t, s, captionReply)
+
+		for _, id := range []string{"t1", "t2"} {
+			ch := MessageChange{ChatJID: changeDM, ID: id, ActorSenders: []string{"447700000001"}, At: changeAt}
+			if res, err := s.ApplyRevoke(ctx, ch, keep); err != nil || res != ChangeApplied {
+				t.Fatalf("keep=%v: revoke %s = %v, %v", keep, id, res, err)
+			}
+		}
+
+		check := func(stage string) {
+			t.Helper()
+			msgs, err := s.ListMessages(ctx, ListMessagesParams{ChatJID: changeDM, After: time.Date(2026, 3, 1, 9, 4, 0, 0, time.UTC)})
+			if err != nil {
+				t.Fatalf("ListMessages: %v", err)
+			}
+			text := s.FormatMessagesList(ctx, msgs, false)
+			mc, err := s.GetMessageContext(ctx, "r1", 0, 1)
+			if err != nil {
+				t.Fatalf("GetMessageContext: %v", err)
+			}
+			raw, _ := json.Marshal(mc)
+			if !keep {
+				for _, leak := range []string{secret, "Foto vom Vertrag"} {
+					if strings.Contains(text, leak) || strings.Contains(string(raw), leak) {
+						t.Errorf("%s: deleted text %q readable:\n%s\n%s", stage, leak, text, raw)
+					}
+				}
+				if !strings.Contains(text, `(reply to t1 from Alice: "[deleted by sender]") danke`) ||
+					!strings.Contains(text, `(reply to t2 from Alice: "[deleted by sender] [image]") ok`) {
+					t.Errorf("%s: reply markers:\n%s", stage, text)
+				}
+				var stored sql.NullString
+				if err := s.db.QueryRow("SELECT quoted_text FROM messages WHERE id = 'r1'").Scan(&stored); err != nil || stored.String != "" {
+					t.Errorf("%s: quoted_text still stored: %q (err %v)", stage, stored.String, err)
+				}
+			} else if !strings.Contains(text, `"[deleted by sender] `+secret+`") danke`) {
+				t.Errorf("%s: keep-revoked reply marker:\n%s", stage, text)
+			}
+		}
+		check("after revoke")
+		// History sync delivers the replies again, embedded copies included.
+		storeChangeTarget(t, s, reply)
+		storeChangeTarget(t, s, captionReply)
+		check("after re-delivery")
+	}
+}

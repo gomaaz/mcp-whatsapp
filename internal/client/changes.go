@@ -130,11 +130,13 @@ func historyChange(chatJID, targetID string, nm normalizedMessage, hm historyMes
 	}
 }
 
-// storeHistoryEdit stores an edit found in a history sync. When the edited
-// message is cached it gets the new text through ApplyEdit (with the author
-// check). When it is not cached yet, the edit is stored as the message
-// itself with edited_at set; StoreMessage then keeps the edited text when the
-// older original arrives later in the same payload. Reports whether anything
+// storeHistoryEdit stores an edit found in a history sync. handleHistorySync
+// calls it once the conversation's messages are stored, oldest edit first.
+// When the edited message is cached it gets the new text through ApplyEdit
+// (with the author check; an older edit than the stored one is ignored).
+// When it is not cached, the edit is stored as the message itself with
+// edited_at set; StoreMessage keeps that text when the original arrives
+// later only if the original has the same author. Reports whether anything
 // was stored.
 func (c *Client) storeHistoryEdit(ctx context.Context, nm normalizedMessage, hm historyMessage) bool {
 	ch := historyChange(nm.msg.ChatJID, nm.msg.ID, nm, hm)

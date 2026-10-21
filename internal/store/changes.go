@@ -39,6 +39,10 @@ const (
 	// ChangeTargetRevoked means an edit arrived for a deleted message and
 	// was ignored.
 	ChangeTargetRevoked
+	// ChangeStale means the message already carries a newer edit, so an
+	// older one (replayed by a history sync, which lists newest first) was
+	// ignored.
+	ChangeStale
 )
 
 func (r ChangeResult) String() string {
@@ -51,13 +55,17 @@ func (r ChangeResult) String() string {
 		return "not sent by the message's author"
 	case ChangeTargetRevoked:
 		return "target already deleted"
+	case ChangeStale:
+		return "target has a newer edit"
 	}
 	return fmt.Sprintf("ChangeResult(%d)", int(r))
 }
 
 // ApplyEdit replaces the text of a cached message with its edited version
 // and records edited_at. It only applies when the edit comes from the
-// message's author (see changeAllowed), and never to a revoked message.
+// message's author (see changeAllowed), never to a revoked message, and
+// never over a newer edit: an edit older than the stored edited_at returns
+// ChangeStale, so edits replayed out of order cannot roll the text back.
 func (s *Store) ApplyEdit(ctx context.Context, ch MessageChange, text string) (ChangeResult, error) {
 	target, revoked, err := s.changeTarget(ctx, ch)
 	if err != nil || target != ChangeApplied {
@@ -66,11 +74,18 @@ func (s *Store) ApplyEdit(ctx context.Context, ch MessageChange, text string) (C
 	if revoked {
 		return ChangeTargetRevoked, nil
 	}
-	if _, err := s.db.ExecContext(ctx,
-		"UPDATE messages SET content = ?, edited_at = ? WHERE id = ? AND chat_jid = ?",
-		text, dbTime(ch.At), ch.ID, ch.ChatJID,
-	); err != nil {
+	at := dbTime(ch.At)
+	res, err := s.db.ExecContext(ctx,
+		"UPDATE messages SET content = ?, edited_at = ? WHERE id = ? AND chat_jid = ? AND (edited_at IS NULL OR edited_at <= ?)",
+		text, at, ch.ID, ch.ChatJID, at,
+	)
+	if err != nil {
 		return 0, fmt.Errorf("apply edit: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return 0, fmt.Errorf("apply edit: %w", err)
+	} else if n == 0 {
+		return ChangeStale, nil
 	}
 	return ChangeApplied, nil
 }
@@ -79,20 +94,39 @@ func (s *Store) ApplyEdit(ctx context.Context, ch MessageChange, text string) (C
 // revoked_at. Unless keepContent is set, it also blanks the text and the
 // media download fields (url, direct path, key, hashes) and any cached
 // transcript, so neither the text nor the file of a message its author
-// deleted can be read back. The media type and file name stay, so the line
-// still shows what kind of message it was. Revoking an already revoked
-// message keeps the first revoked_at.
+// deleted can be read back. The copy of its text that replies to it carried
+// (quoted_text) is cleared as well; the read path shows such quotes as
+// "[deleted by sender]" from then on, also for replies stored again later.
+// The media type and file name stay, so the line still shows what kind of
+// message it was. Revoking an already revoked message keeps the first
+// revoked_at.
 func (s *Store) ApplyRevoke(ctx context.Context, ch MessageChange, keepContent bool) (ChangeResult, error) {
 	target, _, err := s.changeTarget(ctx, ch)
 	if err != nil || target != ChangeApplied {
 		return target, err
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("apply revoke: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
 	q := "UPDATE messages SET revoked_at = COALESCE(revoked_at, ?)"
 	if !keepContent {
 		q += ", content = '', url = '', direct_path = '', media_key = NULL, file_sha256 = NULL, file_enc_sha256 = NULL, file_length = 0, transcript = NULL"
 	}
 	q += " WHERE id = ? AND chat_jid = ?"
-	if _, err := s.db.ExecContext(ctx, q, dbTime(ch.At), ch.ID, ch.ChatJID); err != nil {
+	if _, err := tx.ExecContext(ctx, q, dbTime(ch.At), ch.ID, ch.ChatJID); err != nil {
+		return 0, fmt.Errorf("apply revoke: %w", err)
+	}
+	if !keepContent {
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE messages SET quoted_text = NULL WHERE chat_jid = ? AND quoted_message_id = ?",
+			ch.ChatJID, ch.ID,
+		); err != nil {
+			return 0, fmt.Errorf("apply revoke: clear quotes: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("apply revoke: %w", err)
 	}
 	return ChangeApplied, nil

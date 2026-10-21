@@ -9,14 +9,14 @@ import (
 	"time"
 )
 
-// listMessageColumns is the 23-column projection shared by ListMessages,
+// listMessageColumns is the 24-column projection shared by ListMessages,
 // messageContext and queryContextWindow, scanned by scanListMessageRow. It
 // must be selected FROM listMessageFrom, which provides the chats and quoted
 // aliases. The quoted.* columns describe the cached original of a reply and
 // are NULL when it is not a reply or the original is not cached.
 const listMessageColumns = "messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.rowid, " +
 	"messages.quoted_message_id, messages.quoted_sender, messages.quoted_text, messages.is_forwarded, " +
-	"quoted.content, quoted.media_type, quoted.filename, quoted.sender, quoted.is_from_me, " +
+	"quoted.content, quoted.media_type, quoted.filename, quoted.sender, quoted.is_from_me, quoted.revoked_at, " +
 	"messages.edited_at, messages.revoked_at, " +
 	"messages.audio_seconds, messages.is_voice_note, messages.transcript"
 
@@ -460,7 +460,7 @@ func (s *Store) queryContextWindow(ctx context.Context, chatJID string, anchorRo
 	return out, rows.Err()
 }
 
-// scanListMessageRow scans the 23-column listMessageColumns projection used
+// scanListMessageRow scans the 24-column listMessageColumns projection used
 // by list_messages and the context window queries.
 func (s *Store) scanListMessageRow(row interface {
 	Scan(dest ...any) error
@@ -484,6 +484,7 @@ func (s *Store) scanListMessageRow(row interface {
 		origFilename  sql.NullString
 		origSender    sql.NullString
 		origIsFromMe  sql.NullBool
+		origRevoked   sql.NullTime
 		editedAt      sql.NullTime
 		revokedAt     sql.NullTime
 		audioSeconds  sql.NullInt64
@@ -492,7 +493,7 @@ func (s *Store) scanListMessageRow(row interface {
 	)
 	if err := row.Scan(&ts, &sender, &chatName, &content, &isFromMe, &chatJID, &id, &mediaType, &rowID,
 		&quotedID, &quotedSender, &quotedText, &isForwarded,
-		&origContent, &origMediaType, &origFilename, &origSender, &origIsFromMe,
+		&origContent, &origMediaType, &origFilename, &origSender, &origIsFromMe, &origRevoked,
 		&editedAt, &revokedAt,
 		&audioSeconds, &isVoiceNote, &transcript); err != nil {
 		return Message{}, err
@@ -528,7 +529,15 @@ func (s *Store) scanListMessageRow(row interface {
 	// The original is cached (quoted.is_from_me is NOT NULL for any stored
 	// row): prefer its text and author over what the reply embedded.
 	if m.QuotedMessageID != "" && origIsFromMe.Valid {
-		if snippet := QuoteSnippet(origContent.String, origMediaType.String, origFilename.String); snippet != "" {
+		snippet := QuoteSnippet(origContent.String, origMediaType.String, origFilename.String)
+		switch {
+		case origRevoked.Valid:
+			// Its sender deleted it. The reply's embedded copy is the text
+			// as it was before, so it is never shown; what the stored row
+			// still holds (a media marker, or the text with -keep-revoked)
+			// follows the marker.
+			m.QuotedText = strings.TrimSpace(revokedMarker + " " + snippet)
+		case snippet != "":
 			m.QuotedText = snippet
 		}
 		m.QuotedFromMe = origIsFromMe.Bool

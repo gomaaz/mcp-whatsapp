@@ -293,3 +293,111 @@ func TestHistoryMessageFromKey_Edit(t *testing.T) {
 		t.Errorf("fallback edit = %+v", hm)
 	}
 }
+
+// newHistoryChangeClient returns a client for history-sync tests with both
+// test chats named, so GetChatName stays away from the network.
+func newHistoryChangeClient(t *testing.T) (*Client, *store.Store) {
+	t.Helper()
+	s := newTestStoreWithLIDMap(t, nil)
+	c := newClientWithContacts(t, s, "491700000000", nil)
+	for jid, name := range map[string]string{chgDM: "Alice", chgGroup: "Project Team"} {
+		if err := s.StoreChat(jid, name, chgTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return c, s
+}
+
+func historySync(chat string, msgs ...*waProto.WebMessageInfo) *events.HistorySync {
+	conv := &waProto.Conversation{ID: proto.String(chat)}
+	for _, m := range msgs {
+		conv.Messages = append(conv.Messages, &waProto.HistorySyncMsg{Message: m})
+	}
+	return &events.HistorySync{Data: &waProto.HistorySync{Conversations: []*waProto.Conversation{conv}}}
+}
+
+// TestHandleHistorySync_EditsOldestFirst: a message edited twice ends up with
+// the newest edit, whether history lists both edits before the original
+// (newest first), without the original, or replays them after the newest
+// edit was already applied live.
+func TestHandleHistorySync_EditsOldestFirst(t *testing.T) {
+	e2 := historyWebMessageAt("e-2", false, chgTime.Add(3*time.Minute), editPayload("m-1", text("dritte Fassung")))
+	e1 := historyWebMessageAt("e-1", false, chgTime.Add(2*time.Minute), editPayload("m-1", text("zweite Fassung")))
+	orig := historyWebMessageAt("m-1", false, chgTime.Add(time.Minute), text("erste Fassung"))
+
+	t.Run("with original", func(t *testing.T) {
+		c, s := newHistoryChangeClient(t)
+		c.handleHistorySync(historySync(chgDM, e2, e1, orig))
+		if r := readChg(t, s, chgDM, "m-1"); r.content != "dritte Fassung" || !r.edited {
+			t.Errorf("m-1 = %+v, want the newest edit", r)
+		}
+	})
+	t.Run("original not cached", func(t *testing.T) {
+		c, s := newHistoryChangeClient(t)
+		c.handleHistorySync(historySync(chgDM, e2, e1))
+		if r := readChg(t, s, chgDM, "m-1"); r.content != "dritte Fassung" || !r.edited {
+			t.Errorf("m-1 = %+v, want the newest edit", r)
+		}
+	})
+	t.Run("replay after live edit", func(t *testing.T) {
+		c, s := newHistoryChangeClient(t)
+		c.handleMessage(liveMessage(t, chgDM, chgDM, "m-1", false, chgTime.Add(time.Minute), text("erste Fassung")))
+		c.handleMessage(liveMessage(t, chgDM, chgDM, "e-2", false, chgTime.Add(3*time.Minute), editPayload("m-1", text("dritte Fassung"))))
+		c.handleHistorySync(historySync(chgDM, e2, e1, orig))
+		if r := readChg(t, s, chgDM, "m-1"); r.content != "dritte Fassung" || !r.edited {
+			t.Errorf("m-1 = %+v, want the newest edit", r)
+		}
+	})
+}
+
+// TestHandleHistorySync_ForeignEditBeforeOriginal: in a group, member B's
+// edit of A's message comes first in history (newest first). It must not end
+// up as A's text marked [edited], neither when A's original follows in the
+// same payload nor when it arrives later.
+func TestHandleHistorySync_ForeignEditBeforeOriginal(t *testing.T) {
+	const alice, bob = "447700000001@s.whatsapp.net", "447700000002@s.whatsapp.net"
+	forged := historyWebMessageAt("b-edit", false, chgTime.Add(2*time.Minute), editPayload("g-1", text("Bob war hier")))
+	forged.Participant = proto.String(bob)
+	orig := historyWebMessageAt("g-1", false, chgTime.Add(time.Minute), text("Alice schreibt"))
+	orig.Participant = proto.String(alice)
+
+	readSender := func(t *testing.T, s *store.Store) string {
+		t.Helper()
+		var sender string
+		if err := s.DB().QueryRow("SELECT sender FROM messages WHERE id = 'g-1' AND chat_jid = ?", chgGroup).Scan(&sender); err != nil {
+			t.Fatalf("read sender: %v", err)
+		}
+		return sender
+	}
+
+	t.Run("same payload", func(t *testing.T) {
+		c, s := newHistoryChangeClient(t)
+		c.handleHistorySync(historySync(chgGroup, forged, orig))
+		if r := readChg(t, s, chgGroup, "g-1"); r.content != "Alice schreibt" || r.edited {
+			t.Errorf("g-1 = %+v, want Alice's text unedited", r)
+		}
+		if got := readSender(t, s); got != "447700000001" {
+			t.Errorf("sender = %q, want Alice", got)
+		}
+	})
+	t.Run("original arrives later", func(t *testing.T) {
+		c, s := newHistoryChangeClient(t)
+		c.handleHistorySync(historySync(chgGroup, forged))
+		c.handleMessage(liveMessage(t, chgGroup, alice, "g-1", false, chgTime.Add(time.Minute), text("Alice schreibt")))
+		if r := readChg(t, s, chgGroup, "g-1"); r.content != "Alice schreibt" || r.edited {
+			t.Errorf("g-1 = %+v, want Alice's text unedited", r)
+		}
+		if got := readSender(t, s); got != "447700000001" {
+			t.Errorf("sender = %q, want Alice", got)
+		}
+	})
+	t.Run("author edit kept", func(t *testing.T) {
+		c, s := newHistoryChangeClient(t)
+		own := historyWebMessageAt("a-edit", false, chgTime.Add(2*time.Minute), editPayload("g-1", text("Alice korrigiert")))
+		own.Participant = proto.String(alice)
+		c.handleHistorySync(historySync(chgGroup, own, orig))
+		if r := readChg(t, s, chgGroup, "g-1"); r.content != "Alice korrigiert" || !r.edited {
+			t.Errorf("g-1 = %+v, want Alice's edit", r)
+		}
+	})
+}

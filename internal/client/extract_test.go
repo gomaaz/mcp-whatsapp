@@ -44,6 +44,24 @@ func TestExtractTextContent_ConversationWinsOverExtendedText(t *testing.T) {
 	}
 }
 
+func TestExtractTextContent_MediaCaptions(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  *waProto.Message
+		want string
+	}{
+		{"image", &waProto.Message{ImageMessage: &waProto.ImageMessage{Caption: proto.String("Bild mit Text")}}, "Bild mit Text"},
+		{"video", &waProto.Message{VideoMessage: &waProto.VideoMessage{Caption: proto.String("Video mit Text")}}, "Video mit Text"},
+		{"document", &waProto.Message{DocumentMessage: &waProto.DocumentMessage{Caption: proto.String("Datei mit Text")}}, "Datei mit Text"},
+		{"image without caption", &waProto.Message{ImageMessage: &waProto.ImageMessage{}}, ""},
+	}
+	for _, tc := range cases {
+		if got := extractTextContent(tc.msg); got != tc.want {
+			t.Errorf("%s: extractTextContent = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestExtractMediaInfo_Nil(t *testing.T) {
 	mediaType, filename, url, directPath, mediaKey, sha, encSHA, length := extractMediaInfo(nil)
 	if mediaType != "" || filename != "" || url != "" || directPath != "" ||

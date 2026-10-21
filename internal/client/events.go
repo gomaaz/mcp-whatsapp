@@ -397,6 +397,8 @@ func (c *Client) resolveChatNameFallback(ctx context.Context, jid types.JID, sen
 }
 
 // extractTextContent returns the plain-text body of a Message, if any.
+// For image, video and document messages it returns the caption, since
+// WhatsApp carries the accompanying text there instead of in Conversation.
 func extractTextContent(msg *waProto.Message) string {
 	if msg == nil {
 		return ""
@@ -406,6 +408,15 @@ func extractTextContent(msg *waProto.Message) string {
 	}
 	if ext := msg.GetExtendedTextMessage(); ext != nil {
 		return ext.GetText()
+	}
+	if img := msg.GetImageMessage(); img != nil {
+		return img.GetCaption()
+	}
+	if vid := msg.GetVideoMessage(); vid != nil {
+		return vid.GetCaption()
+	}
+	if doc := msg.GetDocumentMessage(); doc != nil {
+		return doc.GetCaption()
 	}
 	return ""
 }

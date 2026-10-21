@@ -138,8 +138,18 @@ func (s *Store) ListChats(ctx context.Context, query string, limit, page int, in
 
 	var args []any
 	if query != "" {
-		b.WriteString(" WHERE (LOWER(chats.name) LIKE LOWER(?) OR chats.jid LIKE ?)")
-		args = append(args, "%"+query+"%", "%"+query+"%")
+		pattern := "%" + query + "%"
+		where := "LOWER(chats.name) LIKE LOWER(?) OR chats.jid LIKE ?"
+		args = append(args, pattern, pattern)
+		// Saved names live in whatsmeow_contacts on a separate DB handle, so
+		// match them there and pass the JIDs in; LIMIT/OFFSET stay in SQL.
+		if names := s.searchContactNames(pattern); len(names) > 0 {
+			where += " OR chats.jid IN (" + strings.TrimSuffix(strings.Repeat("?,", len(names)), ",") + ")"
+			for jid := range names {
+				args = append(args, jid)
+			}
+		}
+		b.WriteString(" WHERE (" + where + ")")
 	}
 
 	if sortBy == "name" {
@@ -163,6 +173,7 @@ func (s *Store) ListChats(ctx context.Context, query string, limit, page int, in
 		if err != nil {
 			return nil, err
 		}
+		c.Name = s.displayName(c.JID, c.Name)
 		c.PhoneNumber = s.ResolveJIDToPhone(c.JID)
 		result = append(result, c)
 	}
@@ -186,6 +197,7 @@ func (s *Store) GetChat(ctx context.Context, jid string, includeLastMessage bool
 		}
 		return nil, fmt.Errorf("get chat: %w", err)
 	}
+	c.Name = s.displayName(c.JID, c.Name)
 	c.PhoneNumber = s.ResolveJIDToPhone(c.JID)
 	return &c, nil
 }
@@ -289,7 +301,7 @@ func (s *Store) GetMessageContext(ctx context.Context, messageID string, before,
 		Timestamp: ts,
 		IsFromMe:  isFromMe,
 		MediaType: mediaType.String,
-		ChatName:  chatName.String,
+		ChatName:  s.displayName(chatJID, chatName.String),
 	}
 	target.IsGroup = strings.HasSuffix(target.ChatJID, "@g.us")
 	target.SenderPhone = s.resolveSenderPhone(target.Sender)
@@ -301,6 +313,13 @@ func (s *Store) GetMessageContext(ctx context.Context, messageID string, before,
 	afterMsgs, err := s.queryContextWindow(ctx, msgChat, ts, after, true)
 	if err != nil {
 		return nil, err
+	}
+	// The window is the same chat, so reuse the resolved name.
+	for i := range beforeMsgs {
+		beforeMsgs[i].ChatName = target.ChatName
+	}
+	for i := range afterMsgs {
+		afterMsgs[i].ChatName = target.ChatName
 	}
 
 	return &MessageContext{

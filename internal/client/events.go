@@ -338,10 +338,14 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 // GetChatName determines the appropriate name for a chat. It checks the
 // existing database entry first, then falls back to conversation metadata
 // (for history sync), contact store lookups, and finally the JID.
+// A stored name that is only the chat's number or our own number is a
+// placeholder and gets resolved again, so a later contact sync can fix it.
 // The conversation parameter is the typed whatsmeow Conversation from a
 // history-sync payload; pass nil for live messages.
 func (c *Client) GetChatName(jid types.JID, chatJID string, conversation *waHistorySync.Conversation, sender string) string {
-	if existing := c.store.FindChatName(chatJID); existing != "" {
+	chatUser, _, _ := strings.Cut(chatJID, "@")
+	if existing := c.store.FindChatName(chatJID); existing != "" &&
+		existing != chatUser && existing != jid.User && existing != c.ownUser() {
 		c.log.Infof("Using existing chat name for %s: %s", chatJID, existing)
 		return existing
 	}
@@ -376,8 +380,9 @@ func (c *Client) GetChatName(jid types.JID, chatJID string, conversation *waHist
 }
 
 // resolveChatNameFallback looks up a chat's name via GetGroupInfo (for
-// groups) or the contact store (for DMs), falling back to sender (if given)
-// and finally jid.User. This is the shared tail of GetChatName's group and
+// groups) or the contact store (for DMs: full name, then push name, then
+// business name), falling back to sender (if given and not ourselves) and
+// finally jid.User. This is the shared tail of GetChatName's group and
 // contact branches, also used directly by persistSent (which has no
 // conversation metadata to check first).
 func (c *Client) resolveChatNameFallback(ctx context.Context, jid types.JID, sender string) string {
@@ -387,13 +392,27 @@ func (c *Client) resolveChatNameFallback(ctx context.Context, jid types.JID, sen
 		}
 		return "Group " + jid.User
 	}
-	if contact, err := c.wa.Store.Contacts.GetContact(ctx, jid); err == nil && contact.FullName != "" {
-		return contact.FullName
+	if contact, err := c.wa.Store.Contacts.GetContact(ctx, jid); err == nil {
+		for _, name := range []string{contact.FullName, contact.PushName, contact.BusinessName} {
+			if name != "" {
+				return name
+			}
+		}
 	}
-	if sender != "" {
+	// In a DM we wrote first, sender is our own number, not the chat's name.
+	if sender != "" && sender != c.ownUser() {
 		return sender
 	}
 	return jid.User
+}
+
+// ownUser returns our own phone number (JID user part), or "" when the
+// device is not paired.
+func (c *Client) ownUser() string {
+	if c.wa == nil || c.wa.Store == nil || c.wa.Store.ID == nil {
+		return ""
+	}
+	return c.wa.Store.ID.User
 }
 
 // extractTextContent returns the plain-text body of a Message, if any.

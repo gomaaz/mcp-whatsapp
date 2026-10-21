@@ -515,3 +515,115 @@ func TestGetMessageAtOrBefore_NothingThatFarBack(t *testing.T) {
 		t.Fatalf("expected sql.ErrNoRows, got %v", err)
 	}
 }
+
+// seedNumberNamedChat adds a 1:1 chat for the seeded address-book contact
+// Jane (919900000000) whose stored name is just the bare number, plus one
+// inbound message, the way live messages name chats before a contact sync.
+func seedNumberNamedChat(t *testing.T, s *Store) {
+	t.Helper()
+	const jid = "919900000000@s.whatsapp.net"
+	if _, err := s.db.Exec(`INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)`,
+		jid, "919900000000", "2026-01-11 09:00:00"); err != nil {
+		t.Fatalf("seed chat: %v", err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me, media_type)
+		VALUES ('j1', ?, '919900000000', 'hi from jane', '2026-01-11 09:00:00', 0, '')`, jid); err != nil {
+		t.Fatalf("seed message: %v", err)
+	}
+}
+
+func TestDisplayName(t *testing.T) {
+	s := openTestStore(t)
+
+	cases := []struct {
+		jid, stored, want string
+	}{
+		{"919900000000@s.whatsapp.net", "919900000000", "Jane Smith Delhi"}, // address book wins
+		{"919900000000@s.whatsapp.net", "Old Name", "Jane Smith Delhi"},
+		{"447700000001@s.whatsapp.net", "Alice", "Alice"},               // no contact: stored name
+		{"447700000009@s.whatsapp.net", "447700000009", "447700000009"}, // bare number stays the number
+		{"447700000009@s.whatsapp.net", "", "447700000009"},
+		{"123456789@g.us", "Project Team", "Project Team"},
+	}
+	for _, tc := range cases {
+		if got := s.displayName(tc.jid, tc.stored); got != tc.want {
+			t.Errorf("displayName(%q, %q) = %q, want %q", tc.jid, tc.stored, got, tc.want)
+		}
+	}
+}
+
+func TestListChats_MatchesAddressBookName(t *testing.T) {
+	s := openTestStore(t)
+	seedNumberNamedChat(t, s)
+	ctx := context.Background()
+
+	chats, err := s.ListChats(ctx, "jane", 20, 0, false, "last_active")
+	if err != nil {
+		t.Fatalf("ListChats: %v", err)
+	}
+	if len(chats) != 1 || chats[0].JID != "919900000000@s.whatsapp.net" {
+		t.Fatalf("expected Jane's chat via the address book, got %+v", chats)
+	}
+	if chats[0].Name != "Jane Smith Delhi" {
+		t.Fatalf("Name = %q, want address-book name", chats[0].Name)
+	}
+
+	// Paging applies to the combined match set: page 1 of a single hit is empty.
+	chats, err = s.ListChats(ctx, "jane", 1, 1, false, "last_active")
+	if err != nil {
+		t.Fatalf("ListChats paged: %v", err)
+	}
+	if len(chats) != 0 {
+		t.Fatalf("expected no chats on page 1, got %+v", chats)
+	}
+
+	// An unrelated query must not pull in address-book chats.
+	chats, err = s.ListChats(ctx, "Project", 20, 0, false, "last_active")
+	if err != nil {
+		t.Fatalf("ListChats Project: %v", err)
+	}
+	if len(chats) != 1 || chats[0].JID != "123456789@g.us" {
+		t.Fatalf("expected only the group, got %+v", chats)
+	}
+}
+
+func TestGetChat_UsesAddressBookName(t *testing.T) {
+	s := openTestStore(t)
+	seedNumberNamedChat(t, s)
+
+	c, err := s.GetChat(context.Background(), "919900000000@s.whatsapp.net", false)
+	if err != nil || c == nil {
+		t.Fatalf("GetChat: %v, %v", c, err)
+	}
+	if c.Name != "Jane Smith Delhi" {
+		t.Fatalf("Name = %q, want address-book name", c.Name)
+	}
+}
+
+func TestGetMessageContext_UsesAddressBookName(t *testing.T) {
+	s := openTestStore(t)
+	seedNumberNamedChat(t, s)
+
+	mc, err := s.GetMessageContext(context.Background(), "j1", 1, 1)
+	if err != nil {
+		t.Fatalf("GetMessageContext: %v", err)
+	}
+	if mc.Message.ChatName != "Jane Smith Delhi" {
+		t.Fatalf("chat_name = %q, want address-book name", mc.Message.ChatName)
+	}
+}
+
+func TestFormatMessage_ChatUsesAddressBookName(t *testing.T) {
+	s := openTestStore(t)
+	seedNumberNamedChat(t, s)
+	ctx := context.Background()
+
+	msgs, err := s.ListMessages(ctx, ListMessagesParams{ChatJID: "919900000000@s.whatsapp.net"})
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("ListMessages: %v, %+v", err, msgs)
+	}
+	out := s.FormatMessage(ctx, msgs[0], true)
+	if !strings.Contains(out, "Chat: Jane Smith Delhi ") {
+		t.Fatalf("expected address-book chat name, got %q", out)
+	}
+}

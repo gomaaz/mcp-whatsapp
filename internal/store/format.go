@@ -16,7 +16,7 @@ func (s *Store) FormatMessage(ctx context.Context, m Message, showChatInfo bool)
 
 	if showChatInfo && m.ChatName != "" {
 		b.WriteString("Chat: ")
-		b.WriteString(m.ChatName)
+		b.WriteString(s.displayName(m.ChatJID, m.ChatName))
 		b.WriteString(" ")
 	}
 

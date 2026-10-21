@@ -1,11 +1,14 @@
 package client
 
 import (
+	"context"
 	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"go.mau.fi/whatsmeow"
+	wastore "go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 
@@ -252,5 +255,84 @@ func TestHandleMessage_GroupChatNotNormalized(t *testing.T) {
 	}
 	if storedSender != "447700000002" {
 		t.Errorf("sender = %q, want normalized phone", storedSender)
+	}
+}
+
+// fakeContacts is a whatsmeow ContactStore that only answers GetContact; any
+// other method panics through the nil embedded interface.
+type fakeContacts struct {
+	wastore.ContactStore
+	byJID map[types.JID]types.ContactInfo
+}
+
+func (f fakeContacts) GetContact(_ context.Context, jid types.JID) (types.ContactInfo, error) {
+	return f.byJID[jid], nil
+}
+
+// newClientWithContacts wires a minimal whatsmeow client whose device has our
+// own JID and the given contact store. GetChatName's DM path only reads
+// Store.ID and Store.Contacts, so nothing here talks to WhatsApp.
+func newClientWithContacts(t *testing.T, s *store.Store, own string, contacts map[types.JID]types.ContactInfo) *Client {
+	t.Helper()
+	c := newClientWithStore(t, s)
+	ownJID := types.NewJID(own, types.DefaultUserServer)
+	c.wa = &whatsmeow.Client{Store: &wastore.Device{
+		ID:       &ownJID,
+		Contacts: fakeContacts{byJID: contacts},
+	}}
+	return c
+}
+
+func TestGetChatName_ReplacesPlaceholderNames(t *testing.T) {
+	const (
+		own    = "491700000000"
+		user   = "491752489443"
+		jidStr = user + "@s.whatsapp.net"
+	)
+	jid := types.NewJID(user, types.DefaultUserServer)
+	contacts := map[types.JID]types.ContactInfo{jid: {Found: true, FullName: "Süleyman Ari Neu"}}
+
+	for _, stored := range []string{user, own} {
+		s := newTestStoreWithLIDMap(t, nil)
+		if err := s.StoreChat(jidStr, stored, time.Now()); err != nil {
+			t.Fatalf("seed chat: %v", err)
+		}
+		c := newClientWithContacts(t, s, own, contacts)
+		if got := c.GetChatName(jid, jidStr, nil, ""); got != "Süleyman Ari Neu" {
+			t.Errorf("stored %q: GetChatName = %q, want contact name", stored, got)
+		}
+	}
+}
+
+func TestGetChatName_ContactNameFallbackOrder(t *testing.T) {
+	const own = "491700000000"
+	cases := []struct {
+		info types.ContactInfo
+		want string
+	}{
+		{types.ContactInfo{FullName: "Full", PushName: "Push", BusinessName: "Biz"}, "Full"},
+		{types.ContactInfo{PushName: "Push", BusinessName: "Biz"}, "Push"},
+		{types.ContactInfo{BusinessName: "Biz"}, "Biz"},
+		{types.ContactInfo{}, "491711111111"}, // sender
+	}
+	for _, tc := range cases {
+		s := newTestStoreWithLIDMap(t, nil)
+		jid := types.NewJID("491711111111", types.DefaultUserServer)
+		c := newClientWithContacts(t, s, own, map[types.JID]types.ContactInfo{jid: tc.info})
+		if got := c.GetChatName(jid, jid.String(), nil, "491711111111"); got != tc.want {
+			t.Errorf("contact %+v: GetChatName = %q, want %q", tc.info, got, tc.want)
+		}
+	}
+}
+
+func TestGetChatName_OwnSenderIsNotChatName(t *testing.T) {
+	const own = "491700000000"
+	s := newTestStoreWithLIDMap(t, nil)
+	jid := types.NewJID("491722222222", types.DefaultUserServer)
+	c := newClientWithContacts(t, s, own, nil)
+
+	// We wrote first in this DM, so the sender is our own number.
+	if got := c.GetChatName(jid, jid.String(), nil, own); got != "491722222222" {
+		t.Fatalf("GetChatName = %q, want the chat's number, not our own", got)
 	}
 }

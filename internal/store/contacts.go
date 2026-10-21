@@ -1,6 +1,9 @@
 package store
 
-import "database/sql"
+import (
+	"database/sql"
+	"strings"
+)
 
 // contactNameExpr coalesces the whatsmeow_contacts name columns in preference
 // order: the saved address-book name first, then push name, first name, and
@@ -22,6 +25,24 @@ func (s *Store) ContactName(jid string) string {
 		return ""
 	}
 	return name.String
+}
+
+// displayName picks the name shown for a chat: the synced address-book name
+// when there is one, else the stored chat name unless it is just the bare
+// phone number, else the phone number (JID user part). 1:1 chat names are
+// often stored as the bare number, so the address book wins. Groups have no
+// address-book entry and skip that lookup.
+func (s *Store) displayName(jid, stored string) string {
+	if !strings.HasSuffix(jid, "@g.us") {
+		if name := s.ContactName(jid); name != "" {
+			return name
+		}
+	}
+	user := jidUser(jid)
+	if stored != "" && stored != user {
+		return stored
+	}
+	return user
 }
 
 // searchContactNames returns address-book contacts whose name or JID matches

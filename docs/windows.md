@@ -14,3 +14,7 @@
 Without this setup, the build fails with:
 
 > `Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work.`
+
+## Start at logon
+
+To run `serve` in read-only mode whenever you log on, register a scheduled task with [`windows/register-task.ps1`](windows/register-task.ps1). [windows/README.md](windows/README.md) covers registering, removing, logs and environment variables.

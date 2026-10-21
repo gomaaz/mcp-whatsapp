@@ -126,16 +126,19 @@ func ValidateOutputPath(userPath, allowedRoot string) (string, error) {
 
 // SafeFilename returns filepath.Base(raw) unless the base is one of the
 // degenerate values that could escape a join or hit special-case behaviour
-// ("", ".", "..", "/", or contains a null byte), in which case it returns
-// a timestamped fallback of the form "document_YYYYMMDD_HHMMSS". Matches
-// the old whatsapp-bridge behaviour.
+// ("", ".", "..", only path separators, or raw contains a null byte), in
+// which case it returns a timestamped fallback of the form
+// "document_YYYYMMDD_HHMMSS". Matches the old whatsapp-bridge behaviour.
+//
+// The separator check covers both '/' and '\': on Windows filepath.Base
+// returns `\` for inputs such as "/", `\` or "C:", and joining that onto a
+// directory yields the directory itself instead of a file inside it.
 func SafeFilename(raw string) string {
 	if strings.ContainsRune(raw, '\x00') {
 		return fallbackFilename()
 	}
 	base := filepath.Base(raw)
-	switch base {
-	case "", ".", "..", "/":
+	if base == "." || base == ".." || strings.Trim(base, `/\`) == "" {
 		return fallbackFilename()
 	}
 	return base

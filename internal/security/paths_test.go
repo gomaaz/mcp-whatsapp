@@ -3,6 +3,7 @@ package security
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -132,8 +133,14 @@ func TestValidateOutputPath_NestedDirInsideRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.HasPrefix(got, root) && !strings.Contains(got, "/sub/x.jpg") {
-		t.Fatalf("path should resolve under root/sub, got %q", got)
+	// Compare against the resolved root: t.TempDir can sit behind a symlink
+	// (/var -> /private/var on macOS) or an 8.3 short name on Windows.
+	rootResolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("resolve root: %v", err)
+	}
+	if want := filepath.Join(rootResolved, "sub", "x.jpg"); got != want {
+		t.Fatalf("want %q, got %q", want, got)
 	}
 }
 
@@ -228,7 +235,11 @@ func TestSafeFilename(t *testing.T) {
 		})
 	}
 
-	fallbacks := []string{"", ".", "..", "/"}
+	fallbacks := []string{"", ".", "..", "/", `\`, "//"}
+	if runtime.GOOS == "windows" {
+		// filepath.Base reduces a bare volume or root to `\` on Windows.
+		fallbacks = append(fallbacks, "C:", `C:\`, `\\`)
+	}
 	for _, in := range fallbacks {
 		t.Run("fallback/"+in, func(t *testing.T) {
 			got := SafeFilename(in)

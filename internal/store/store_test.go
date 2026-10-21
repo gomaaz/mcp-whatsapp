@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -470,6 +471,13 @@ func TestOpen_StorePermissions(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer s.Close()
+
+	if runtime.GOOS == "windows" {
+		// os.Chmod on Windows only toggles the read-only attribute and
+		// os.Stat reports 0777/0666 for any writable entry; access is
+		// governed by NTFS ACLs, which POSIX modes cannot express.
+		t.Skip("POSIX permission bits are not enforced on Windows")
+	}
 
 	info, err := os.Stat(dir)
 	if err != nil {

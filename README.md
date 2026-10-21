@@ -116,6 +116,7 @@ Events reach SQLite **only while `serve` runs**. After downtime, whatsmeow backf
 |---|---|
 | macOS launchd | Copy `docs/launchd/com.sealjay.whatsapp-mcp.plist` to `~/Library/LaunchAgents/`, fill `{{PATH_TO_REPO}}` / `{{STORE_DIR}}`, `launchctl load` |
 | Linux systemd | Copy `docs/systemd/whatsapp-mcp.service` to `~/.config/systemd/user/`, fill placeholders, `systemctl --user enable --now whatsapp-mcp` |
+| Windows Task Scheduler | `docs/windows/register-task.ps1 -StorePath <dir>` registers a per-user logon task running `-read-only … serve`; see [docs/windows/README.md](docs/windows/README.md) |
 | Claude Code hook | Put `docs/hooks/setup.sh` in `.claude/hooks/` and call it from `settings.json` (idempotent) |
 | Manual | `./bin/whatsapp-mcp serve` |
 

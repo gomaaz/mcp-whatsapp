@@ -134,11 +134,52 @@ func TestListMessages_RejectsUnknownMediaType(t *testing.T) {
 	}
 }
 
+// include_context defaults to true, but to false once from_me or media_type
+// is set, because context lines are not filtered; an explicit value wins.
+func TestIncludeContext_Defaults(t *testing.T) {
+	yes, no := true, false
+	cases := []struct {
+		name string
+		args listMessagesArgs
+		want bool
+	}{
+		{"no filter", listMessagesArgs{}, true},
+		{"chat filter only", listMessagesArgs{ChatJID: "447700000001@s.whatsapp.net", Query: "x"}, true},
+		{"from_me false", listMessagesArgs{FromMe: &no}, false},
+		{"from_me true", listMessagesArgs{FromMe: &yes}, false},
+		{"media_type", listMessagesArgs{MediaType: "image"}, false},
+		{"explicit on with filter", listMessagesArgs{FromMe: &no, IncludeContext: &yes}, true},
+		{"explicit off", listMessagesArgs{IncludeContext: &no}, false},
+	}
+	for _, tc := range cases {
+		if got := includeContext(tc.args); got != tc.want {
+			t.Errorf("%s: includeContext = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestAddHealthFields_OmitsZeroValues(t *testing.T) {
 	status := map[string]any{"connected": false}
-	addHealthFields(status, client.Health{})
+	addHealthFields(status, client.Health{}, false)
 	if len(status) != 1 {
 		t.Fatalf("zero Health added fields: %v", status)
+	}
+}
+
+// connected_since is left out while disconnected, even if the tracker missed
+// the disconnect; the other fields stay.
+func TestAddHealthFields_DropsConnectedSinceWhileDisconnected(t *testing.T) {
+	h := client.Health{
+		ConnectedSince:   time.Date(2026, 10, 21, 8, 0, 0, 0, time.UTC),
+		LastDisconnectAt: time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC),
+	}
+	status := map[string]any{}
+	addHealthFields(status, h, false)
+	if _, ok := status["connected_since"]; ok {
+		t.Errorf("connected_since present while disconnected: %v", status)
+	}
+	if status["last_disconnect_at"] != "2026-10-20T08:00:00Z" {
+		t.Errorf("last_disconnect_at = %v", status["last_disconnect_at"])
 	}
 }
 
@@ -154,7 +195,7 @@ func TestAddHealthFields_FormatsRFC3339UTC(t *testing.T) {
 		LastMessageReceivedAt: time.Date(2026, 10, 21, 10, 5, 30, 0, time.UTC),
 	}
 	status := map[string]any{}
-	addHealthFields(status, h)
+	addHealthFields(status, h, true)
 
 	want := map[string]string{
 		"connected_since":          "2026-10-21T08:00:00Z",

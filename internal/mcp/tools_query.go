@@ -76,18 +76,18 @@ var listMessagesMediaTypes = []string{"image", "video", "audio", "document", "st
 
 func (s *Server) registerListMessages() {
 	tool := mcp.NewTool("list_messages",
-		mcp.WithDescription(offlineSafePrefix+"Search and page through cached WhatsApp messages, optionally filtering by chat, sender, direction, media type, time range, and substring; can include surrounding context messages. Read-only; no side effects. Use get_message_context to expand around a single known message ID, or request_sync to backfill missing history. Returns a human-readable formatted text block, one line per message, each starting with its UTC time (RFC 3339, `Z` suffix) and tagged with its `message_id` and `chat_jid`; replies show `(reply to <message_id> from <sender>: \"<quoted text>\")`, forwarded messages `[forwarded]`, edited messages `[edited]`, messages their sender deleted for everyone `[deleted by sender]` and reacted-to messages end with `[reactions: <emoji> <name>, …]`; locations, contact cards and stickers appear as `[location] …`, `[contact] …` and `[sticker]`, and messages this device could not decrypt as a placeholder that asks you to check the phone."),
+		mcp.WithDescription(offlineSafePrefix+"Search and page through cached WhatsApp messages, optionally filtering by chat, sender, direction, media type, time range, and substring; can include surrounding context messages. Read-only; no side effects. Use get_message_context to expand around a single known message ID, or request_sync to backfill missing history. Returns a human-readable formatted text block, one line per message, each starting with its UTC time (RFC 3339, `Z` suffix) and tagged with its `message_id` and `chat_jid`; without context the matches come newest first, with context the matches and their context lines come oldest first, interleaved across chats by time; replies show `(reply to <message_id> from <sender>: \"<quoted text>\")`, forwarded messages `[forwarded]`, edited messages `[edited]`, messages their sender deleted for everyone `[deleted by sender]` and reacted-to messages end with `[reactions: <emoji> <name>, …]`; locations, contact cards and stickers appear as `[location] …`, `[contact] …` and `[sticker]`, and messages this device could not decrypt as a placeholder that asks you to check the phone."),
 		mcp.WithString("after", mcp.Description("keep messages at or after this time (inclusive); "+timeFilterDesc)),
 		mcp.WithString("before", mcp.Description("keep messages strictly before this time (exclusive), so `before=2026-10-21` ends with 20 October UTC; "+timeFilterDesc)),
 		mcp.WithString("sender_phone_number", mcp.Description("filter to messages sent by this phone or JID ("+jidDesc+")")),
 		mcp.WithString("chat_jid", mcp.Description("filter to messages in this chat ("+jidDesc+")")),
 		mcp.WithString("query", mcp.Description("case-insensitive substring to match within message body or a cached voice-note transcript (see transcribe_media)")),
-		mcp.WithBoolean("from_me", mcp.Description("direction filter: true keeps only messages you sent, false only incoming ones; omit for both")),
-		mcp.WithString("media_type", mcp.Enum(listMessagesMediaTypes...), mcp.Description("keep only messages with this attachment type: `image`, `video` (video notes included), `audio`, `document`, `sticker`, or `none` for text-only (locations and contact cards count as text); omit for all")),
+		mcp.WithBoolean("from_me", mcp.Description("direction filter: true keeps only messages you sent, false only incoming ones; omit for both. Applies to the matches only: context lines are not filtered, so include_context defaults to false when this is set")),
+		mcp.WithString("media_type", mcp.Enum(listMessagesMediaTypes...), mcp.Description("keep only messages with this attachment type: `image`, `video` (video notes included), `audio`, `document`, `sticker`, or `none` for text-only (locations and contact cards count as text); omit for all. Applies to the matches only: context lines are not filtered, so include_context defaults to false when this is set")),
 		mcp.WithBoolean("exclude_groups", mcp.DefaultBool(false), mcp.Description("if true, skip messages from group chats (defaults to false)")),
 		mcp.WithNumber("limit", mcp.DefaultNumber(20), mcp.Description("max messages to return (default 20, capped at 100 server-side)")),
 		mcp.WithNumber("page", mcp.DefaultNumber(0), mcp.Description("zero-based page index for paging through results (default 0)")),
-		mcp.WithBoolean("include_context", mcp.DefaultBool(true), mcp.Description("if true, attach a few surrounding messages to each match (defaults to true)")),
+		mcp.WithBoolean("include_context", mcp.Description("if true, attach a few surrounding messages to each match, unfiltered by from_me and media_type (defaults to true, or to false when from_me or media_type is set)")),
 		mcp.WithNumber("context_before", mcp.DefaultNumber(1), mcp.Description("messages to include before each match (default 1, capped at 20 server-side)")),
 		mcp.WithNumber("context_after", mcp.DefaultNumber(1), mcp.Description("messages to include after each match (default 1, capped at 20 server-side)")),
 		mcp.WithReadOnlyHintAnnotation(true),
@@ -121,7 +121,7 @@ func (s *Server) registerListMessages() {
 			ExcludeGroups:  a.ExcludeGroups,
 			Limit:          limit,
 			Page:           a.Page,
-			IncludeContext: a.IncludeContext == nil || *a.IncludeContext,
+			IncludeContext: includeContext(a),
 			ContextBefore:  ctxBefore,
 			ContextAfter:   ctxAfter,
 		}
@@ -145,6 +145,17 @@ func (s *Server) registerListMessages() {
 		}
 		return mcp.NewToolResultText(s.client.Store().FormatMessagesList(ctx, msgs, true)), nil
 	}))
+}
+
+// includeContext resolves list_messages' include_context. An explicit value
+// wins. Otherwise context is on, except when from_me or media_type is set:
+// context lines are not filtered, so they would bring back the very messages
+// the filter is meant to leave out.
+func includeContext(a listMessagesArgs) bool {
+	if a.IncludeContext != nil {
+		return *a.IncludeContext
+	}
+	return a.FromMe == nil && a.MediaType == ""
 }
 
 // -- list_unanswered --------------------------------------------------------
@@ -207,11 +218,11 @@ type listChatsArgs struct {
 func (s *Server) registerListChats() {
 	tool := mcp.NewTool("list_chats",
 		mcp.WithDescription(offlineSafePrefix+"List cached WhatsApp chats (1:1 and group), optionally filtered by name substring and sorted by recency or alphabetic name. Read-only; no side effects. Use get_chat for a single chat by JID, list_groups for groups only. Returns a JSON array of chat objects (each with JID, name, last-message metadata when requested)."),
-		mcp.WithString("query", mcp.Description("case-insensitive substring to match against chat name")),
+		mcp.WithString("query", mcp.Description("case-insensitive substring to match against the chat name, the address-book names of the chat's contact, or its phone number or JID")),
 		mcp.WithNumber("limit", mcp.DefaultNumber(20), mcp.Description("max chats to return (default 20)")),
 		mcp.WithNumber("page", mcp.DefaultNumber(0), mcp.Description("zero-based page index for paging through results (default 0)")),
 		mcp.WithBoolean("include_last_message", mcp.DefaultBool(true), mcp.Description("if true, include each chat's most recent message in the result (defaults to true)")),
-		mcp.WithString("sort_by", mcp.DefaultString("last_active"), mcp.Enum("last_active", "name"), mcp.Description("sort order: `last_active` (most-recent first, default) or `name` (alphabetic)")),
+		mcp.WithString("sort_by", mcp.DefaultString("last_active"), mcp.Enum("last_active", "name"), mcp.Description("sort order: `last_active` (most-recent first, default) or `name` (alphabetic by the returned name, case-insensitive)")),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -328,15 +339,16 @@ func (s *Server) registerIsOnWhatsApp() {
 
 func (s *Server) registerGetStatus() {
 	tool := mcp.NewTool("get_status",
-		mcp.WithDescription("Report whether the embedded WhatsApp bridge is connected and which account it is paired with. Read-only; no side effects. Call this first when other tools fail with auth or connection errors. Returns a JSON object `{connected, paired, own_jid?, own_phone?, hint?, connected_since?, last_disconnect_at?, logged_out_at?, logout_reason?, temporary_ban_until?, temporary_ban_reason?, last_message_received_at?}` — `hint` includes the URL of the local pairing UI when not yet paired; the timestamps are RFC 3339 UTC, tracked locally since the server started, and omitted until the event has happened (logged_out_at means WhatsApp ended the session and the device must be paired again)."),
+		mcp.WithDescription("Report whether the embedded WhatsApp bridge is connected and which account it is paired with. Read-only; no side effects. Call this first when other tools fail with auth or connection errors. Returns a JSON object `{connected, paired, own_jid?, own_phone?, hint?, connected_since?, last_disconnect_at?, logged_out_at?, logout_reason?, temporary_ban_until?, temporary_ban_reason?, last_message_received_at?}` — `hint` includes the URL of the local pairing UI when not yet paired; the timestamps are RFC 3339 UTC, tracked locally since the server started, and omitted until the event has happened; connected_since is left out while disconnected. logged_out_at and logout_reason record the most recent logout since the server started and stay after the device is paired again; `paired: false` is what says it still needs pairing."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
 		mcp.WithOpenWorldHintAnnotation(false),
 	)
 	s.addTool(tool, func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		connected := s.client.IsConnected()
 		status := map[string]any{
-			"connected": s.client.IsConnected(),
+			"connected": connected,
 		}
 		if wa := s.client.WA(); wa != nil && wa.Store != nil && wa.Store.ID != nil {
 			status["own_jid"] = wa.Store.ID.String()
@@ -346,7 +358,7 @@ func (s *Server) registerGetStatus() {
 			status["paired"] = false
 			status["hint"] = "Not paired. Open /pair on this server in a browser to scan QR (default: http://127.0.0.1:8765/pair)."
 		}
-		addHealthFields(status, s.client.Health())
+		addHealthFields(status, s.client.Health(), connected)
 		return resultJSON(status)
 	})
 }
@@ -354,7 +366,12 @@ func (s *Server) registerGetStatus() {
 // addHealthFields copies the client's connection bookkeeping into a get_status
 // payload. Times are RFC 3339 in UTC; zero times and empty reasons are left
 // out so a fresh process reports only what it has actually seen.
-func addHealthFields(status map[string]any, h client.Health) {
+// connected_since is also left out while the client is not connected, in case
+// a disconnect reached whatsmeow without an event the tracker sees.
+func addHealthFields(status map[string]any, h client.Health, connected bool) {
+	if !connected {
+		h.ConnectedSince = time.Time{}
+	}
 	putTime := func(key string, t time.Time) {
 		if !t.IsZero() {
 			status[key] = t.UTC().Format(time.RFC3339)

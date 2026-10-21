@@ -46,7 +46,8 @@ type ListMessagesParams struct {
 	FromMe *bool
 	// MediaType keeps only messages with this media type ("image", "video",
 	// "audio", "document", "sticker"); MediaTypeNone keeps only text
-	// messages.
+	// messages. FromMe and MediaType select the matches only; the context
+	// windows added by IncludeContext are not filtered.
 	MediaType      string
 	ExcludeGroups  bool
 	Limit          int
@@ -194,7 +195,13 @@ func (s *Store) ListMessages(ctx context.Context, params ListMessagesParams) ([]
 	return expanded, nil
 }
 
-// ListChats returns chats matching query. sortBy is "last_active" (default) or "name".
+// ListChats returns one page of the chats matching query. sortBy is
+// "last_active" (default) or "name". The query matches the stored chat name,
+// the JID, the phone number behind an @lid chat and every address-book name
+// (full, push, first or business name) of the chat's contact, also for chats
+// stored under their @lid JID. Address-book names live in the separate
+// whatsmeow DB, and "name" sorts by the resolved display name, so the match
+// set is built, sorted and paged here; only the page is loaded in full.
 func (s *Store) ListChats(ctx context.Context, query string, limit, page int, includeLastMessage bool, sortBy string) ([]Chat, error) {
 	if limit <= 0 {
 		limit = 20
@@ -203,54 +210,120 @@ func (s *Store) ListChats(ctx context.Context, query string, limit, page int, in
 		page = 0
 	}
 
-	var b strings.Builder
-	b.WriteString(chatSelectSQL("chats", includeLastMessage))
-
-	var args []any
-	if query != "" {
-		pattern := "%" + query + "%"
-		where := "LOWER(chats.name) LIKE LOWER(?) OR chats.jid LIKE ?"
-		args = append(args, pattern, pattern)
-		// Saved names live in whatsmeow_contacts on a separate DB handle, so
-		// match them there and pass the JIDs in; LIMIT/OFFSET stay in SQL.
-		if names := s.searchContactNames(pattern); len(names) > 0 {
-			where += " OR chats.jid IN (" + strings.TrimSuffix(strings.Repeat("?,", len(names)), ",") + ")"
-			for jid := range names {
-				args = append(args, jid)
-			}
-		}
-		b.WriteString(" WHERE (" + where + ")")
+	type candidate struct {
+		jid, name string
+		resolved  bool // name is already the display name
 	}
-
-	if sortBy == "name" {
-		b.WriteString(" ORDER BY chats.name")
-	} else {
-		b.WriteString(" ORDER BY chats.last_message_time DESC")
-	}
-
-	b.WriteString(" LIMIT ? OFFSET ?")
-	args = append(args, limit, page*limit)
-
-	rows, err := s.db.QueryContext(ctx, b.String(), args...)
+	rows, err := s.db.QueryContext(ctx, "SELECT jid, name FROM chats ORDER BY last_message_time DESC, jid")
 	if err != nil {
 		return nil, fmt.Errorf("list chats: %w", err)
 	}
-	defer rows.Close()
-
-	var result []Chat
+	var all []candidate
 	for rows.Next() {
-		c, err := scanChatRow(rows)
+		var c candidate
+		var name sql.NullString
+		if err := rows.Scan(&c.jid, &name); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		c.name = name.String
+		all = append(all, c)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	cands := all
+	if query != "" {
+		contacts := s.searchContactNames("%"+query+"%", 0)
+		needle := strings.ToLower(query)
+		var matched []candidate
+		for _, c := range all {
+			if s.chatMatches(c.jid, c.name, needle, contacts) {
+				matched = append(matched, c)
+			}
+		}
+		cands = matched
+	}
+
+	if sortBy == "name" {
+		for i := range cands {
+			cands[i].name = s.displayName(cands[i].jid, cands[i].name)
+			cands[i].resolved = true
+		}
+		sort.SliceStable(cands, func(i, j int) bool {
+			a, b := strings.ToLower(cands[i].name), strings.ToLower(cands[j].name)
+			if a != b {
+				return a < b
+			}
+			return cands[i].jid < cands[j].jid
+		})
+	}
+
+	start := page * limit
+	if start >= len(cands) {
+		return nil, nil
+	}
+	pageCands := cands[start:min(start+limit, len(cands))]
+
+	args := make([]any, len(pageCands))
+	for i, c := range pageCands {
+		args[i] = c.jid
+	}
+	q := chatSelectSQL("chats", includeLastMessage) +
+		" WHERE chats.jid IN (" + strings.TrimSuffix(strings.Repeat("?,", len(args)), ",") + ")"
+	pageRows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list chats: %w", err)
+	}
+	defer pageRows.Close()
+	byJID := make(map[string]Chat, len(pageCands))
+	for pageRows.Next() {
+		c, err := scanChatRow(pageRows)
 		if err != nil {
 			return nil, err
 		}
-		c.Name = s.displayName(c.JID, c.Name)
+		byJID[c.JID] = c
+	}
+	if err := pageRows.Err(); err != nil {
+		return nil, err
+	}
+
+	var result []Chat
+	for _, pc := range pageCands {
+		c, ok := byJID[pc.jid]
+		if !ok {
+			continue // removed since the first query
+		}
+		if pc.resolved {
+			c.Name = pc.name
+		} else {
+			c.Name = s.displayName(c.JID, c.Name)
+		}
 		c.PhoneNumber = s.ResolveJIDToPhone(c.JID)
 		result = append(result, c)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
 	return result, nil
+}
+
+// chatMatches reports whether a chat matches a list_chats query. needle is
+// the lower-cased query; contacts holds the address-book matches by phone
+// JID. An @lid chat is compared through the phone JID it maps to.
+func (s *Store) chatMatches(jid, stored, needle string, contacts map[string]string) bool {
+	if strings.Contains(strings.ToLower(stored), needle) || strings.Contains(strings.ToLower(jid), needle) {
+		return true
+	}
+	if strings.HasSuffix(jid, "@g.us") {
+		return false
+	}
+	phoneJID := s.ResolveLIDToJID(jid)
+	if phoneJID != jid && strings.Contains(phoneJID, needle) {
+		return true
+	}
+	_, ok := contacts[phoneJID]
+	return ok
 }
 
 // GetChat returns a single chat by JID. Returns (nil, nil) when not found.
@@ -310,7 +383,7 @@ func (s *Store) SearchContacts(ctx context.Context, query string) ([]Contact, er
 
 	// Merge in address-book matches (issue #21: saved names live in
 	// whatsmeow_contacts, not chats).
-	names := s.searchContactNames(pattern)
+	names := s.searchContactNames(pattern, 50)
 	seen := make(map[string]bool, len(result))
 	for i, c := range result {
 		seen[c.JID] = true

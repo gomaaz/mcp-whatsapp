@@ -163,9 +163,9 @@ Message types without text of their own are stored with a readable line instead 
 | Tool | Purpose |
 |---|---|
 | `search_contacts` | Substring search across cached contact names and phone numbers |
-| `list_messages` | Query + filter messages; returns formatted text with context windows. `after` (inclusive) and `before` (exclusive) take RFC 3339 with `Z` or an offset, a time without offset (read as UTC) or a bare `YYYY-MM-DD` (00:00 UTC) |
+| `list_messages` | Query + filter messages; returns formatted text with context windows. `after` (inclusive) and `before` (exclusive) take RFC 3339 with `Z` or an offset, a time without offset (read as UTC) or a bare `YYYY-MM-DD` (00:00 UTC). `from_me` and `media_type` filter the matches only, not their context lines, so `include_context` defaults to false when either is set. Without context the matches come newest first, with context everything comes oldest first |
 | `list_unanswered` | Chats where someone wrote and is still waiting for your reply: incoming messages after your own last message and after `since` (default 7 days ago, same time formats as `list_messages`). Longest wait first, with count, first/last waiting time and the newest waiting message. Every own message counts as a reply, stickers, locations and contact cards included, and so does your own emoji reaction to an incoming message: it answers that message and everything before it. Groups only with `include_groups: true`; status updates, broadcast lists, channels and deleted messages are left out |
-| `list_chats` | List chats with last-message preview; sort by activity or name |
+| `list_chats` | List chats with last-message preview; sort by activity or by the shown name. `query` also matches the address-book names and phone number of the contact behind a chat, including chats stored under an `@lid` JID |
 | `get_chat` | Chat metadata by JID |
 | `get_message_context` | Before/after window around a specific message, with each message's emoji reactions |
 | `download_media` | Download persisted media to a local path |

@@ -285,6 +285,31 @@ func TestHandleHistorySync_AppliesRevokesAndEdits(t *testing.T) {
 	}
 }
 
+// TestHandleHistorySync_CaptionEditKeepsMediaAndTime: a history caption edit
+// of an image cached earlier changes only the text. The media key (needed by
+// download_media) and the original's time stay.
+func TestHandleHistorySync_CaptionEditKeepsMediaAndTime(t *testing.T) {
+	c, s := newHistoryChangeClient(t)
+	c.handleMessage(liveMessage(t, chgDM, chgDM, "img-h", false, chgTime,
+		&waProto.Message{ImageMessage: &waProto.ImageMessage{Caption: proto.String("Foto alt"), MediaKey: []byte{9}, DirectPath: proto.String("/v/t62/x")}}))
+
+	edit := historyWebMessageAt("edit-h", false, chgTime.Add(time.Hour),
+		editPayload("img-h", &waProto.Message{ImageMessage: &waProto.ImageMessage{Caption: proto.String("Foto neu")}}))
+	c.handleHistorySync(historySync(chgDM, edit))
+
+	if r := readChg(t, s, chgDM, "img-h"); r.content != "Foto neu" || !r.edited || !r.mediaKeyPresent {
+		t.Errorf("img-h = %+v, want the new caption with the media key kept", r)
+	}
+	var ts time.Time
+	var directPath string
+	if err := s.DB().QueryRow("SELECT timestamp, direct_path FROM messages WHERE id = 'img-h'").Scan(&ts, &directPath); err != nil {
+		t.Fatal(err)
+	}
+	if !ts.Equal(chgTime) || directPath != "/v/t62/x" {
+		t.Errorf("timestamp = %v, direct_path = %q; want the original's", ts, directPath)
+	}
+}
+
 func TestHistoryMessageFromKey_Edit(t *testing.T) {
 	chat := types.NewJID("123456789", types.GroupServer)
 	wm := historyWebMessage("k-edit", false, "", editPayload("k-orig", text("neu")))

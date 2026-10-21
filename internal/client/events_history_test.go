@@ -111,6 +111,67 @@ func TestHandleHistorySync_UnwrapsWrappedMessages(t *testing.T) {
 	}
 }
 
+// TestHandleHistorySync_OwnMessageInLIDChat: in an @lid DM, ParseWebMessage
+// names our own LID as the sender of our messages. They must still be stored
+// under our phone number, marked as ours.
+func TestHandleHistorySync_OwnMessageInLIDChat(t *testing.T) {
+	const own = "491700000000"
+	s := newTestStoreWithLIDMap(t, map[string]string{"99887766": "447700000002"})
+	c := newClientWithContacts(t, s, own, nil)
+	// Our own LID is deliberately not in the LID map.
+	c.wa.Store.LID = types.NewJID("55554444", types.HiddenUserServer)
+
+	c.handleHistorySync(&events.HistorySync{Data: &waProto.HistorySync{
+		Conversations: []*waProto.Conversation{
+			historyConversation("99887766@lid", historyWebMessage("mine-lid", true, "", &waProto.Message{Conversation: proto.String("meine Antwort")})),
+		},
+	}})
+
+	var chat, sender string
+	var fromMe bool
+	if err := s.DB().QueryRow("SELECT chat_jid, sender, is_from_me FROM messages WHERE id = 'mine-lid'").Scan(&chat, &sender, &fromMe); err != nil {
+		t.Fatalf("not stored: %v", err)
+	}
+	if chat != "447700000002@s.whatsapp.net" || sender != own || !fromMe {
+		t.Errorf("got chat=%q sender=%q fromMe=%v, want chat 447700000002@s.whatsapp.net, sender %s, fromMe", chat, sender, fromMe, own)
+	}
+}
+
+// TestHandleHistorySync_SameSecondKeepsSendOrder: history lists newest first.
+// Two messages from the same second (a picture, then its explanation) must
+// keep their send order, which the (timestamp, rowid) ordering relies on.
+func TestHandleHistorySync_SameSecondKeepsSendOrder(t *testing.T) {
+	s := newTestStoreWithLIDMap(t, nil)
+	c := newClientWithContacts(t, s, "491700000000", nil)
+	const dm = "447700000001@s.whatsapp.net"
+
+	conv := &waProto.Conversation{
+		ID: proto.String(dm),
+		Messages: []*waProto.HistorySyncMsg{
+			{Message: historyWebMessage("second", false, "", &waProto.Message{Conversation: proto.String("das ist der Fehler")})},
+			{Message: historyWebMessage("first", false, "", &waProto.Message{ImageMessage: &waProto.ImageMessage{}})},
+		},
+	}
+	c.handleHistorySync(&events.HistorySync{Data: &waProto.HistorySync{Conversations: []*waProto.Conversation{conv}}})
+
+	rows, err := s.DB().Query("SELECT id FROM messages WHERE chat_jid = ? ORDER BY timestamp, rowid", dm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) != 2 || ids[0] != "first" || ids[1] != "second" {
+		t.Errorf("order = %v, want [first second]", ids)
+	}
+}
+
 // TestHistoryMessageFromKey_UnwrapsPayload covers the fallback on its own:
 // sender comes from the key, the payload is unwrapped.
 func TestHistoryMessageFromKey_UnwrapsPayload(t *testing.T) {

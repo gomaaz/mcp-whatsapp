@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -652,6 +653,95 @@ func TestListChats_MatchesAddressBookName(t *testing.T) {
 	}
 	if len(chats) != 1 || chats[0].JID != "123456789@g.us" {
 		t.Fatalf("expected only the group, got %+v", chats)
+	}
+}
+
+// A broad name query matching more than 50 address-book contacts must still
+// find every chat behind them; search_contacts keeps its cap of 50.
+func TestListChats_ContactMatchesNotCapped(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	for i := range 60 {
+		user := fmt.Sprintf("4915000000%02d", i)
+		if _, err := s.db.Exec(`INSERT INTO whatsmeow_contacts (our_jid, their_jid, full_name) VALUES ('me@s.whatsapp.net', ?, ?)`,
+			user+"@s.whatsapp.net", fmt.Sprintf("Kundin %02d", i)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.Exec(`INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, '2026-01-01 00:00:00+00:00')`,
+			user+"@s.whatsapp.net", user); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	chats, err := s.ListChats(ctx, "kundin", 100, 0, false, "last_active")
+	if err != nil {
+		t.Fatalf("ListChats: %v", err)
+	}
+	if len(chats) != 60 {
+		t.Fatalf("got %d chats, want all 60", len(chats))
+	}
+	// Paging works on the full match set.
+	last, err := s.ListChats(ctx, "kundin", 20, 2, false, "last_active")
+	if err != nil || len(last) != 20 {
+		t.Fatalf("page 2: %d chats, err %v", len(last), err)
+	}
+
+	contacts, err := s.SearchContacts(ctx, "kundin")
+	if err != nil || len(contacts) != 50 {
+		t.Fatalf("SearchContacts: %d contacts, err %v, want 50", len(contacts), err)
+	}
+}
+
+// A 1:1 chat stored under its @lid JID is found by the address-book name and
+// the phone number of the contact the LID maps to.
+func TestListChats_MatchesLIDChatByContact(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	// Seed maps LID 11223344 to Jane (919900000000).
+	if _, err := s.db.Exec(`INSERT INTO chats (jid, name, last_message_time) VALUES ('11223344@lid', '11223344', '2026-01-11 09:00:00+00:00')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{"Jane", "jane s", "9199000"} {
+		chats, err := s.ListChats(ctx, q, 20, 0, false, "last_active")
+		if err != nil {
+			t.Fatalf("ListChats(%q): %v", q, err)
+		}
+		if len(chats) != 1 || chats[0].JID != "11223344@lid" || chats[0].Name != "Jane Smith Delhi" {
+			t.Errorf("ListChats(%q) = %+v, want the @lid chat named Jane Smith Delhi", q, chats)
+		}
+	}
+	// The LID mapping must not pull an unrelated @lid chat into a query.
+	chats, err := s.ListChats(ctx, "LidOnly", 20, 0, false, "last_active")
+	if err != nil || len(chats) != 1 || chats[0].JID != "55443322@lid" {
+		t.Fatalf("ListChats(LidOnly) = %+v, %v", chats, err)
+	}
+}
+
+// sort_by "name" orders by the name list_chats returns, so a chat stored under
+// its bare number sorts by its address-book name.
+func TestListChats_SortByNameUsesDisplayName(t *testing.T) {
+	s := openTestStore(t)
+	seedNumberNamedChat(t, s)
+	if _, err := s.db.Exec(`INSERT INTO chats (jid, name, last_message_time) VALUES ('447700000003@s.whatsapp.net', 'carla', '2026-01-01 00:00:00+00:00')`); err != nil {
+		t.Fatal(err)
+	}
+
+	chats, err := s.ListChats(context.Background(), "", 20, 0, false, "name")
+	if err != nil {
+		t.Fatalf("ListChats: %v", err)
+	}
+	var names []string
+	for _, c := range chats {
+		names = append(names, c.Name)
+	}
+	want := []string{"Alice", "Bob", "carla", "Jane Smith Delhi", "LidOnly", "Project Team"}
+	if strings.Join(names, "|") != strings.Join(want, "|") {
+		t.Fatalf("names = %v, want %v", names, want)
+	}
+
+	page, err := s.ListChats(context.Background(), "", 2, 1, false, "name")
+	if err != nil || len(page) != 2 || page[0].Name != "carla" || page[1].Name != "Jane Smith Delhi" {
+		t.Fatalf("page 1 = %+v, %v", page, err)
 	}
 }
 

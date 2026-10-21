@@ -46,12 +46,16 @@ func (s *Store) displayName(jid, stored string) string {
 }
 
 // searchContactNames returns address-book contacts whose name or JID matches
-// the LIKE pattern, as a jid -> display-name map. Empty when the whatsmeow
-// store is unavailable.
-func (s *Store) searchContactNames(pattern string) map[string]string {
+// the LIKE pattern, as a jid -> display-name map, taking the first limit
+// contacts in JID order (all of them when limit <= 0). Empty when the
+// whatsmeow store is unavailable.
+func (s *Store) searchContactNames(pattern string, limit int) map[string]string {
 	out := map[string]string{}
 	if s.whatsmeowDB == nil {
 		return out
+	}
+	if limit <= 0 {
+		limit = -1 // SQLite: no limit
 	}
 	rows, err := s.whatsmeowDB.Query(`
 		SELECT their_jid, `+contactNameExpr+` AS name
@@ -60,7 +64,8 @@ func (s *Store) searchContactNames(pattern string) map[string]string {
 		  AND (LOWER(full_name) LIKE LOWER(?) OR LOWER(push_name) LIKE LOWER(?)
 		    OR LOWER(first_name) LIKE LOWER(?) OR LOWER(business_name) LIKE LOWER(?)
 		    OR their_jid LIKE ?)
-		LIMIT 50`, pattern, pattern, pattern, pattern, pattern)
+		ORDER BY their_jid
+		LIMIT ?`, pattern, pattern, pattern, pattern, pattern, limit)
 	if err != nil {
 		return out
 	}

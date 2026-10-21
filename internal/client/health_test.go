@@ -140,6 +140,26 @@ func TestHandleEvent_RecordsConnectionEvents(t *testing.T) {
 	}
 }
 
+// TestHandleEvent_TerminalDisconnects: after these events whatsmeow closes the
+// connection without an events.Disconnected, so they must end the session in
+// the bookkeeping themselves.
+func TestHandleEvent_TerminalDisconnects(t *testing.T) {
+	for _, evt := range []any{
+		&events.StreamReplaced{},
+		&events.ClientOutdated{},
+		&events.ConnectFailure{Reason: events.ConnectFailureReason(999)},
+		&events.CATRefreshError{},
+	} {
+		c := newClientWithStore(t, nil)
+		c.handleEvent(&events.Connected{})
+		before := time.Now()
+		c.handleEvent(evt)
+		if h := c.Health(); !h.ConnectedSince.IsZero() || h.LastDisconnectAt.Before(before) {
+			t.Errorf("after %T got %+v, want ConnectedSince cleared and LastDisconnectAt set", evt, h)
+		}
+	}
+}
+
 func TestHandleMessage_RecordsIncomingOnly(t *testing.T) {
 	s := newTestStoreWithLIDMap(t, nil)
 	c := newClientWithStore(t, s)

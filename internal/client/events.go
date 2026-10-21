@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -49,6 +50,20 @@ func (c *Client) handleEvent(evt interface{}) {
 	case *events.TemporaryBan:
 		c.health.temporaryBan(time.Now(), v)
 		c.log.Warnf("%s", v)
+	// whatsmeow ends the connection after these without an
+	// events.Disconnected and does not reconnect on its own.
+	case *events.StreamReplaced:
+		c.health.disconnected(time.Now())
+		c.log.Warnf("Session replaced by another client with the same login, not reconnecting")
+	case *events.ClientOutdated:
+		c.health.disconnected(time.Now())
+		c.log.Warnf("WhatsApp rejected this client version as outdated, not reconnecting")
+	case *events.ConnectFailure:
+		c.health.disconnected(time.Now())
+		c.log.Warnf("Connection to WhatsApp failed (%s), not reconnecting", v.Reason)
+	case *events.CATRefreshError:
+		c.health.disconnected(time.Now())
+		c.log.Warnf("Failed to refresh the WhatsApp access token, not reconnecting: %v", v.Error)
 	case *events.OfflineSyncPreview:
 		c.log.Infof("Offline sync starting - %d messages, %d receipts pending", v.Messages, v.Receipts)
 	case *events.OfflineSyncCompleted:
@@ -274,9 +289,9 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 
 	for _, conversation := range historySync.Data.Conversations {
 		// Edits and revokes are applied after the conversation's messages
-		// are stored: the payload lists newest first, so a change usually
-		// comes before the message it changes. Edits then run oldest first,
-		// each through the author check in ApplyEdit.
+		// are stored, so each one finds the message it changes wherever it
+		// sits in the payload. Edits then run oldest first, each through the
+		// author check in ApplyEdit.
 		var (
 			edits   []historyEdit
 			revokes []store.MessageChange
@@ -323,7 +338,10 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 		}
 		_ = c.store.StoreChat(chatJID, name, time.Unix(int64(ts), 0))
 
-		for _, msg := range messages {
+		// Store oldest first, so rowid (the tie-breaker between messages of
+		// the same second in context windows and list order) follows the
+		// order in which they were sent.
+		for _, msg := range slices.Backward(messages) {
 			if msg == nil || msg.Message == nil {
 				continue
 			}

@@ -5,7 +5,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/Sealjay/mcp-whatsapp)](https://goreportcard.com/report/github.com/Sealjay/mcp-whatsapp)
 [![Go 1.26+](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![MCP](https://img.shields.io/badge/MCP-protocol-6366f1)](https://modelcontextprotocol.io/)
-[![42 tools](https://img.shields.io/badge/tools-42-blue)]()
+[![43 tools](https://img.shields.io/badge/tools-43-blue)]()
 [![whatsmeow](https://img.shields.io/badge/whatsmeow-multidevice-25D366?logo=whatsapp&logoColor=white)](https://github.com/tulir/whatsmeow)
 [![Sealjay/mcp-whatsapp MCP server](https://glama.ai/mcp/servers/Sealjay/mcp-whatsapp/badges/score.svg?)](https://glama.ai/mcp/servers/Sealjay/mcp-whatsapp)
 [![GitHub issues](https://img.shields.io/github/issues/Sealjay/mcp-whatsapp)](https://github.com/Sealjay/mcp-whatsapp/issues)
@@ -20,7 +20,7 @@ This started as a fork of [lharries/whatsapp-mcp](https://github.com/lharries/wh
 - **Sent-message storage** — outgoing messages are persisted locally so conversation history stays complete.
 - **Disappearing-message timers** — outgoing messages inherit the group chat's ephemeral timer automatically.
 - **Targeted history sync** — on-demand per-chat backfill via the `request_sync` tool.
-- **Extended tool surface** — 42 tools (see below): reactions, replies, edits, revoke, mark-read, typing, is-on-whatsapp, full group admin, blocklist, polls (create + vote + tally), contact cards, view-once flag, presence, privacy settings, and the profile "About" text.
+- **Extended tool surface** — 43 tools (see below): reactions, replies, edits, revoke, mark-read, typing, is-on-whatsapp, full group admin, blocklist, polls (create + vote + tally), contact cards, view-once flag, presence, privacy settings, and the profile "About" text.
 - **Single-instance enforcement** — a `flock(2)` on `store/.lock` prevents two `serve` processes racing on the same SQLite files.
 
 ## Setup
@@ -89,7 +89,7 @@ Paths outside the root, including symlinks that resolve outside it, are rejected
 - `-allow-remote`: bind a non-loopback address. Requires `WHATSAPP_MCP_TOKEN`, a bearer token for `/mcp` and `/pair/*`; `serve` exits without it.
 - `WHATSAPP_MCP_MEDIA_ROOT`: the file allowlist root above.
 - `WHATSAPP_MCP_DEBUG=1` or `-debug`: verbose logs (see [Debug logging](#debug-logging)).
-- `-read-only` (global, before the command) or `WHATSAPP_MCP_READ_ONLY=1`: register only the 15 tools without outbound effect (`search_contacts`, `list_messages`, `list_chats`, `get_chat`, `get_message_context`, `download_media`, `request_sync`, `get_status`, `pairing_status`, `list_groups`, `get_group_info`, `get_blocklist`, `get_privacy_settings`, `get_poll_results`, `is_on_whatsapp`). Nothing that sends, edits, deletes, sends read receipts or changes groups and privacy is reachable, whatever the client calls. `get_group_invite_link` is left out because it can reset the link. An explicit flag wins over the env var, e.g. `-read-only=false`.
+- `-read-only` (global, before the command) or `WHATSAPP_MCP_READ_ONLY=1`: register only the 16 tools without outbound effect (`search_contacts`, `list_messages`, `list_unanswered`, `list_chats`, `get_chat`, `get_message_context`, `download_media`, `request_sync`, `get_status`, `pairing_status`, `list_groups`, `get_group_info`, `get_blocklist`, `get_privacy_settings`, `get_poll_results`, `is_on_whatsapp`). Nothing that sends, edits, deletes, sends read receipts or changes groups and privacy is reachable, whatever the client calls. `get_group_invite_link` is left out because it can reset the link. An explicit flag wins over the env var, e.g. `-read-only=false`.
 - `-keep-revoked` (global, before the command) or `WHATSAPP_MCP_KEEP_REVOKED=1`: keep the text of messages their sender deleted for everyone. By default the daemon blanks the stored text and media keys of such a message and shows it as `[deleted by sender]`; with this switch the line keeps the text after the marker. Either way `revoked_at` is recorded. An explicit flag wins over the env var.
 
 ## Running the daemon
@@ -136,7 +136,7 @@ Edits and deletes for everyone update the cached message instead of being stored
 
 ## Tools
 
-42 tools, grouped by purpose.
+43 tools, grouped by purpose.
 
 ### Read / query
 
@@ -144,6 +144,7 @@ Edits and deletes for everyone update the cached message instead of being stored
 |---|---|
 | `search_contacts` | Substring search across cached contact names and phone numbers |
 | `list_messages` | Query + filter messages; returns formatted text with context windows. `after` (inclusive) and `before` (exclusive) take RFC 3339 with `Z` or an offset, a time without offset (read as UTC) or a bare `YYYY-MM-DD` (00:00 UTC) |
+| `list_unanswered` | Chats where someone wrote and is still waiting for your reply: incoming messages after your own last message and after `since` (default 7 days ago, same time formats as `list_messages`). Longest wait first, with count, first/last waiting time and the newest waiting message. Groups only with `include_groups: true`; status updates, broadcast lists, channels and deleted messages are left out |
 | `list_chats` | List chats with last-message preview; sort by activity or name |
 | `get_chat` | Chat metadata by JID |
 | `get_message_context` | Before/after window around a specific message |

@@ -174,3 +174,26 @@ func TestAddHealthFields_FormatsRFC3339UTC(t *testing.T) {
 		}
 	}
 }
+
+// An unparseable `since` is rejected before the store is touched, so a nil
+// client is safe here.
+func TestListUnanswered_InvalidSince(t *testing.T) {
+	tool, ok := NewServer(nil, nil).MCP().ListTools()["list_unanswered"]
+	if !ok || tool == nil || tool.Handler == nil {
+		t.Fatal("list_unanswered not registered")
+	}
+	req := mcp.CallToolRequest{}
+	req.Params.Name = "list_unanswered"
+	req.Params.Arguments = map[string]any{"since": "last tuesday"}
+	res, err := tool.Handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("want an error result for an invalid since")
+	}
+	text, _ := mcp.AsTextContent(res.Content[0])
+	if text == nil || !strings.Contains(text.Text, "invalid 'since'") {
+		t.Errorf("error text = %v, want it to name 'since'", res.Content[0])
+	}
+}

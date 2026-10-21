@@ -12,6 +12,7 @@ import (
 var readOnlyTools = map[string]bool{
 	"search_contacts":      true,
 	"list_messages":        true,
+	"list_unanswered":      true,
 	"list_chats":           true,
 	"get_chat":             true,
 	"get_message_context":  true,

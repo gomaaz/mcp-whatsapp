@@ -14,11 +14,12 @@ import (
 )
 
 // registerQueryTools wires read-only query tools: list_chats, get_chat,
-// list_messages, get_message_context, search_contacts, get_status,
-// is_on_whatsapp.
+// list_messages, list_unanswered, get_message_context, search_contacts,
+// get_status, is_on_whatsapp.
 func (s *Server) registerQueryTools() {
 	s.registerSearchContacts()
 	s.registerListMessages()
+	s.registerListUnanswered()
 	s.registerListChats()
 	s.registerGetChat()
 	s.registerGetMessageContext()
@@ -143,6 +144,53 @@ func (s *Server) registerListMessages() {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		return mcp.NewToolResultText(s.client.Store().FormatMessagesList(ctx, msgs, true)), nil
+	}))
+}
+
+// -- list_unanswered --------------------------------------------------------
+
+type listUnansweredArgs struct {
+	Since         string `json:"since,omitempty"`
+	IncludeGroups bool   `json:"include_groups,omitempty"`
+	Limit         int    `json:"limit,omitempty"`
+}
+
+// unansweredDefaultWindow is how far back list_unanswered looks when no
+// `since` is given.
+const unansweredDefaultWindow = 7 * 24 * time.Hour
+
+func (s *Server) registerListUnanswered() {
+	tool := mcp.NewTool("list_unanswered",
+		mcp.WithDescription(offlineSafePrefix+"List the chats in which someone wrote to you and is still waiting for a reply: incoming messages newer than both `since` and your own last message in that chat. Read-only; no side effects. Group chats are skipped unless include_groups is true; status updates, broadcast lists and channels are never listed; messages deleted for everyone count on neither side. Use list_messages or get_message_context with the returned `chat_jid` / message `id` to read the whole conversation. Returns a JSON array sorted by the oldest waiting message first (longest wait on top); each entry has `chat_jid`, `name` (address-book name when saved), `phone_number`, `is_group`, `waiting_count`, `first_waiting_at`, `last_waiting_at`, `last_reply_at` (omitted if you never wrote in the chat) and `last_message` `{id, sender, text, media_type, caption, filename}` for the newest waiting message (`text` for text messages, `caption` for image/video/document). Times are RFC 3339 UTC."),
+		mcp.WithString("since", mcp.Description("only count incoming messages at or after this time (inclusive); defaults to 7 days ago; "+timeFilterDesc)),
+		mcp.WithBoolean("include_groups", mcp.DefaultBool(false), mcp.Description("if true, also list group chats with messages after your last group message (defaults to false)")),
+		mcp.WithNumber("limit", mcp.DefaultNumber(20), mcp.Description("max chats to return (default 20, capped at 100 server-side)")),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
+	)
+	s.addTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a listUnansweredArgs) (*mcp.CallToolResult, error) {
+		limit := a.Limit
+		if limit > 100 {
+			limit = 100
+		}
+		since := time.Now().UTC().Add(-unansweredDefaultWindow)
+		if a.Since != "" {
+			t, err := parseTimestamp(a.Since)
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("invalid 'since': %v", err)), nil
+			}
+			since = t
+		}
+		chats, err := s.client.Store().ListUnanswered(ctx, since, a.IncludeGroups, limit)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		if chats == nil {
+			chats = []store.UnansweredChat{}
+		}
+		return resultJSON(chats)
 	}))
 }
 

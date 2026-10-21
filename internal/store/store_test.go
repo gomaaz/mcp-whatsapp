@@ -45,6 +45,81 @@ func TestStoreChat_Upsert(t *testing.T) {
 	}
 }
 
+// chatLastMessageTime reads chats.last_message_time for jid.
+func chatLastMessageTime(t *testing.T, s *Store, jid string) time.Time {
+	t.Helper()
+	var ts time.Time
+	if err := s.db.QueryRow("SELECT last_message_time FROM chats WHERE jid = ?", jid).Scan(&ts); err != nil {
+		t.Fatalf("read last_message_time: %v", err)
+	}
+	return ts
+}
+
+// A history sync stores chats with the timestamp of old messages; that must
+// not rewind the chat's recency or blank out a known name.
+func TestStoreChat_KeepsNewerTimeAndKnownName(t *testing.T) {
+	s := openTestStore(t)
+
+	jid := "historychat@s.whatsapp.net"
+	newer := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	older := time.Date(2025, 3, 1, 9, 0, 0, 0, time.UTC)
+	if err := s.StoreChat(jid, "Customer", newer); err != nil {
+		t.Fatalf("StoreChat: %v", err)
+	}
+	if err := s.StoreChat(jid, "", older); err != nil {
+		t.Fatalf("StoreChat older: %v", err)
+	}
+	if got := s.FindChatName(jid); got != "Customer" {
+		t.Fatalf("empty name overwrote known one: got %q", got)
+	}
+	if got := chatLastMessageTime(t, s, jid); !got.Equal(newer) {
+		t.Fatalf("last_message_time moved backwards: got %v, want %v", got, newer)
+	}
+
+	latest := newer.Add(time.Hour)
+	if err := s.StoreChat(jid, "Customer GmbH", latest); err != nil {
+		t.Fatalf("StoreChat latest: %v", err)
+	}
+	if got := s.FindChatName(jid); got != "Customer GmbH" {
+		t.Fatalf("expected non-empty name to replace old one, got %q", got)
+	}
+	if got := chatLastMessageTime(t, s, jid); !got.Equal(latest) {
+		t.Fatalf("last_message_time not advanced: got %v, want %v", got, latest)
+	}
+}
+
+// Timestamps are stored with their UTC offset, so the "later" check must
+// compare instants, not strings.
+func TestStoreChat_ComparesTimesAcrossOffsets(t *testing.T) {
+	s := openTestStore(t)
+	cest := time.FixedZone("CEST", 2*60*60)
+
+	jid := "offsetchat@s.whatsapp.net"
+	// 12:00+02:00 is 10:00 UTC.
+	first := time.Date(2026, 10, 21, 12, 0, 0, 0, cest)
+	if err := s.StoreChat(jid, "Offset", first); err != nil {
+		t.Fatalf("StoreChat: %v", err)
+	}
+
+	// 11:00+00:00 sorts before "12:00+02:00" as a string but is an hour later.
+	later := time.Date(2026, 10, 21, 11, 0, 0, 0, time.UTC)
+	if err := s.StoreChat(jid, "Offset", later); err != nil {
+		t.Fatalf("StoreChat later: %v", err)
+	}
+	if got := chatLastMessageTime(t, s, jid); !got.Equal(later) {
+		t.Fatalf("later instant in another offset was ignored: got %v, want %v", got, later)
+	}
+
+	// 11:30+02:00 (09:30 UTC) sorts after "11:00+00:00" as a string but is earlier.
+	earlier := time.Date(2026, 10, 21, 11, 30, 0, 0, cest)
+	if err := s.StoreChat(jid, "Offset", earlier); err != nil {
+		t.Fatalf("StoreChat earlier: %v", err)
+	}
+	if got := chatLastMessageTime(t, s, jid); !got.Equal(later) {
+		t.Fatalf("earlier instant in another offset moved time backwards: got %v, want %v", got, later)
+	}
+}
+
 func TestStoreMessage_DropsEmpty(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

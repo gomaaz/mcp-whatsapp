@@ -9,9 +9,9 @@ import (
 	"time"
 )
 
-// listMessageColumns is the 8-column projection shared by ListMessages and
+// listMessageColumns is the 9-column projection shared by ListMessages and
 // queryContextWindow.
-const listMessageColumns = "messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type"
+const listMessageColumns = "messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.rowid"
 
 // MediaTypeNone is the MediaType filter value that selects text-only messages
 // (no media attachment).
@@ -136,17 +136,37 @@ func (s *Store) ListMessages(ctx context.Context, params ListMessagesParams) ([]
 		after = 1
 	}
 
-	// Expand context: before messages (DESC), the match, after messages (ASC).
+	// Expand context around each match. Windows of nearby matches overlap, so
+	// keep each (chat_jid, id) once and return the lot in chronological order,
+	// with rowid breaking ties between messages from the same second.
 	var expanded []Message
-	for _, m := range result {
-		c, err := s.GetMessageContext(ctx, m.ID, before, after)
-		if err != nil {
-			return nil, err
+	seen := make(map[string]bool)
+	add := func(msgs ...Message) {
+		for _, m := range msgs {
+			key := m.ChatJID + "\x00" + m.ID
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			expanded = append(expanded, m)
 		}
-		expanded = append(expanded, c.Before...)
-		expanded = append(expanded, c.Message)
-		expanded = append(expanded, c.After...)
 	}
+	for _, m := range result {
+		c, err := s.messageContext(ctx, "messages.rowid = ?", m.rowID, before, after)
+		if err != nil {
+			return nil, fmt.Errorf("list messages context: %w", err)
+		}
+		add(c.Before...)
+		add(c.Message)
+		add(c.After...)
+	}
+	sort.SliceStable(expanded, func(i, j int) bool {
+		a, b := expanded[i], expanded[j]
+		if !a.Timestamp.Equal(b.Timestamp) {
+			return a.Timestamp.Before(b.Timestamp)
+		}
+		return a.rowID < b.rowID
+	})
 	return expanded, nil
 }
 
@@ -295,48 +315,37 @@ func (s *Store) SearchContacts(ctx context.Context, query string) ([]Contact, er
 // GetMessageContext returns the target message together with before/after
 // windows from the same chat.
 func (s *Store) GetMessageContext(ctx context.Context, messageID string, before, after int) (*MessageContext, error) {
+	mc, err := s.messageContext(ctx, "messages.id = ?", messageID, before, after)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("message with ID %s not found", messageID)
+	}
+	return mc, err
+}
+
+// messageContext loads the message selected by where (a fixed predicate on
+// the messages table with one placeholder) and the windows around it. It
+// returns sql.ErrNoRows unwrapped when nothing matches.
+func (s *Store) messageContext(ctx context.Context, where string, arg any, before, after int) (*MessageContext, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.chat_jid, messages.media_type
+		SELECT `+listMessageColumns+`
 		FROM messages
 		JOIN chats ON messages.chat_jid = chats.jid
-		WHERE messages.id = ?`, messageID)
+		WHERE `+where, arg)
 
-	var (
-		ts        time.Time
-		sender    string
-		chatName  sql.NullString
-		content   sql.NullString
-		isFromMe  bool
-		chatJID   string
-		id        string
-		msgChat   string
-		mediaType sql.NullString
-	)
-	if err := row.Scan(&ts, &sender, &chatName, &content, &isFromMe, &chatJID, &id, &msgChat, &mediaType); err != nil {
+	target, err := s.scanListMessageRow(row)
+	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("message with ID %s not found", messageID)
+			return nil, err
 		}
 		return nil, fmt.Errorf("get message context: %w", err)
 	}
+	target.ChatName = s.displayName(target.ChatJID, target.ChatName)
 
-	target := Message{
-		ID:        id,
-		ChatJID:   chatJID,
-		Sender:    sender,
-		Content:   content.String,
-		Timestamp: ts,
-		IsFromMe:  isFromMe,
-		MediaType: mediaType.String,
-		ChatName:  s.displayName(chatJID, chatName.String),
-	}
-	target.IsGroup = strings.HasSuffix(target.ChatJID, "@g.us")
-	target.SenderPhone = s.resolveSenderPhone(target.Sender)
-
-	beforeMsgs, err := s.queryContextWindow(ctx, msgChat, ts, before, false)
+	beforeMsgs, err := s.queryContextWindow(ctx, target.ChatJID, target.rowID, before, false)
 	if err != nil {
 		return nil, err
 	}
-	afterMsgs, err := s.queryContextWindow(ctx, msgChat, ts, after, true)
+	afterMsgs, err := s.queryContextWindow(ctx, target.ChatJID, target.rowID, after, true)
 	if err != nil {
 		return nil, err
 	}
@@ -395,9 +404,13 @@ func (s *Store) chatNameByJID(ctx context.Context, jid string) string {
 	return ""
 }
 
-// queryContextWindow fetches `limit` messages in chat either strictly before
-// (ascending=false) or strictly after (ascending=true) the anchor timestamp.
-func (s *Store) queryContextWindow(ctx context.Context, chatJID string, anchor time.Time, limit int, ascending bool) ([]Message, error) {
+// queryContextWindow fetches `limit` messages in chat either before
+// (ascending=false, newest first) or after (ascending=true, oldest first) the
+// anchor row, ordered by (timestamp, rowid). The rowid tie-breaker keeps
+// messages from the same second as the anchor in the window, and the anchor
+// is compared against its own stored timestamp so it never lands in its own
+// window.
+func (s *Store) queryContextWindow(ctx context.Context, chatJID string, anchorRowID int64, limit int, ascending bool) ([]Message, error) {
 	op := "<"
 	order := "DESC"
 	if ascending {
@@ -408,11 +421,14 @@ func (s *Store) queryContextWindow(ctx context.Context, chatJID string, anchor t
 		SELECT `+listMessageColumns+`
 		FROM messages
 		JOIN chats ON messages.chat_jid = chats.jid
-		WHERE messages.chat_jid = ? AND messages.timestamp %s ?
-		ORDER BY messages.timestamp %s
+		JOIN messages AS anchor ON anchor.rowid = ?
+		WHERE messages.chat_jid = ?
+			AND (messages.timestamp %[1]s anchor.timestamp
+				OR (messages.timestamp = anchor.timestamp AND messages.rowid %[1]s anchor.rowid))
+		ORDER BY messages.timestamp %[2]s, messages.rowid %[2]s
 		LIMIT ?`, op, order)
 
-	rows, err := s.db.QueryContext(ctx, q, chatJID, anchor, limit)
+	rows, err := s.db.QueryContext(ctx, q, anchorRowID, chatJID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("context window: %w", err)
 	}
@@ -429,7 +445,7 @@ func (s *Store) queryContextWindow(ctx context.Context, chatJID string, anchor t
 	return out, rows.Err()
 }
 
-// scanListMessageRow scans the 8-column projection used by list_messages and
+// scanListMessageRow scans the 9-column projection used by list_messages and
 // the context window queries.
 func (s *Store) scanListMessageRow(row interface {
 	Scan(dest ...any) error
@@ -443,8 +459,9 @@ func (s *Store) scanListMessageRow(row interface {
 		chatJID   string
 		id        string
 		mediaType sql.NullString
+		rowID     int64
 	)
-	if err := row.Scan(&ts, &sender, &chatName, &content, &isFromMe, &chatJID, &id, &mediaType); err != nil {
+	if err := row.Scan(&ts, &sender, &chatName, &content, &isFromMe, &chatJID, &id, &mediaType, &rowID); err != nil {
 		return Message{}, err
 	}
 	m := Message{
@@ -456,6 +473,7 @@ func (s *Store) scanListMessageRow(row interface {
 		IsFromMe:  isFromMe,
 		MediaType: mediaType.String,
 		ChatName:  chatName.String,
+		rowID:     rowID,
 	}
 	m.IsGroup = strings.HasSuffix(m.ChatJID, "@g.us")
 	m.SenderPhone = s.resolveSenderPhone(m.Sender)

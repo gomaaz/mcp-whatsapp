@@ -277,6 +277,74 @@ func TestGetMessageContext(t *testing.T) {
 	}
 }
 
+// storeSameSecond adds a screenshot plus two follow-up texts to Alice's chat,
+// all in the same second (between seed messages a4 and a5).
+func storeSameSecond(t *testing.T, s *Store) {
+	t.Helper()
+	ts := time.Date(2026, 1, 5, 10, 0, 0, 0, time.UTC)
+	for _, m := range []Message{
+		{ID: "x1", Content: "", MediaType: "image"},
+		{ID: "x2", Content: "see the screenshot"},
+		{ID: "x3", Content: "any idea?"},
+	} {
+		m.ChatJID = "447700000001@s.whatsapp.net"
+		m.Sender = "447700000001@s.whatsapp.net"
+		m.Timestamp = ts
+		if err := s.StoreMessage(context.Background(), m, nil, nil, nil, 0); err != nil {
+			t.Fatalf("StoreMessage %s: %v", m.ID, err)
+		}
+	}
+}
+
+// orderedIDs joins the IDs of msgs in their returned order.
+func orderedIDs(msgs []Message) string {
+	ids := make([]string, len(msgs))
+	for i, m := range msgs {
+		ids[i] = m.ID
+	}
+	return strings.Join(ids, ",")
+}
+
+// Messages sharing the target's timestamp must stay in its context window,
+// on the correct side, and the target must not appear in its own window.
+func TestGetMessageContext_SameTimestamp(t *testing.T) {
+	s := openTestStore(t)
+	storeSameSecond(t, s)
+
+	c, err := s.GetMessageContext(context.Background(), "x2", 2, 2)
+	if err != nil {
+		t.Fatalf("GetMessageContext: %v", err)
+	}
+	if got := orderedIDs(c.Before); got != "x1,a4" {
+		t.Fatalf("before window: got %s, want x1,a4", got)
+	}
+	if got := orderedIDs(c.After); got != "x3,a5" {
+		t.Fatalf("after window: got %s, want x3,a5", got)
+	}
+}
+
+// Overlapping context windows must not repeat messages, and the expanded
+// result reads in chronological order.
+func TestListMessages_ContextDedupedAndChronological(t *testing.T) {
+	s := openTestStore(t)
+	storeSameSecond(t, s)
+
+	got, err := s.ListMessages(context.Background(), ListMessagesParams{
+		ChatJID:        "447700000001@s.whatsapp.net",
+		Limit:          20,
+		IncludeContext: true,
+		ContextBefore:  1,
+		ContextAfter:   1,
+	})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	want := "a1,a2,a3,a4,x1,x2,x3,a5"
+	if ids := orderedIDs(got); ids != want {
+		t.Fatalf("expanded messages: got %s, want %s", ids, want)
+	}
+}
+
 func TestGetSenderName(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

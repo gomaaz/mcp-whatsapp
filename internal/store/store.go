@@ -55,6 +55,10 @@ type Message struct {
 	DirectPath  string `json:"direct_path,omitempty"`
 	ChatName    string `json:"chat_name,omitempty"`
 	PhoneNumber string `json:"phone_number,omitempty"`
+	// rowID is the SQLite rowid of the cached row, set by the list/context
+	// queries. It breaks ties between messages that share a timestamp
+	// (a screenshot and its follow-up text sent in the same second).
+	rowID int64
 }
 
 // Chat is a cached WhatsApp chat.
@@ -156,10 +160,22 @@ func (s *Store) Close() error {
 	return nil
 }
 
-// StoreChat upserts a chat row.
+// StoreChat upserts a chat row. An existing row keeps its name when the new
+// one is empty, and its last_message_time only ever moves forward, so a
+// history sync of old messages cannot rewind a chat's recency. Timestamps are
+// stored as text with a UTC offset, so they are compared with julianday()
+// rather than as strings.
 func (s *Store) StoreChat(jid, name string, lastMessageTime time.Time) error {
-	_, err := s.db.Exec(
-		"INSERT OR REPLACE INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)",
+	_, err := s.db.Exec(`
+		INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)
+		ON CONFLICT(jid) DO UPDATE SET
+			name = COALESCE(NULLIF(excluded.name, ''), chats.name),
+			last_message_time = CASE
+				WHEN julianday(chats.last_message_time) IS NULL
+					OR julianday(excluded.last_message_time) > julianday(chats.last_message_time)
+				THEN excluded.last_message_time
+				ELSE chats.last_message_time
+			END`,
 		jid, name, lastMessageTime,
 	)
 	return err

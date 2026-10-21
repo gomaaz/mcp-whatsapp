@@ -20,6 +20,9 @@ const MediaTypeNone = "none"
 // ListMessagesParams holds the filters accepted by ListMessages. Zero values
 // mean "unset" except for Limit, which defaults to 20 when <= 0.
 type ListMessagesParams struct {
+	// After and Before bound the message time as a half-open range: After is
+	// inclusive, Before exclusive. Both are compared in UTC whatever their
+	// location.
 	After       time.Time
 	Before      time.Time
 	SenderPhone string
@@ -57,12 +60,12 @@ func (s *Store) ListMessages(ctx context.Context, params ListMessagesParams) ([]
 	)
 
 	if !params.After.IsZero() {
-		whereClauses = append(whereClauses, "messages.timestamp > ?")
-		args = append(args, params.After)
+		whereClauses = append(whereClauses, "messages.timestamp >= ?")
+		args = append(args, dbTime(params.After))
 	}
 	if !params.Before.IsZero() {
 		whereClauses = append(whereClauses, "messages.timestamp < ?")
-		args = append(args, params.Before)
+		args = append(args, dbTime(params.Before))
 	}
 	if params.SenderPhone != "" {
 		whereClauses = append(whereClauses, "messages.sender = ?")
@@ -469,7 +472,7 @@ func (s *Store) scanListMessageRow(row interface {
 		ChatJID:   chatJID,
 		Sender:    sender,
 		Content:   content.String,
-		Timestamp: ts,
+		Timestamp: ts.UTC(),
 		IsFromMe:  isFromMe,
 		MediaType: mediaType.String,
 		ChatName:  chatName.String,
@@ -555,7 +558,7 @@ func scanChatRow(row interface {
 		LastIsFromMe: lastIsFromMe.Bool,
 	}
 	if lastTime.Valid {
-		c.LastMessageTime = lastTime.Time
+		c.LastMessageTime = lastTime.Time.UTC()
 	}
 	c.IsGroup = strings.HasSuffix(c.JID, "@g.us")
 	return c, nil

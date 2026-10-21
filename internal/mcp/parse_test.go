@@ -41,6 +41,12 @@ func TestParseTimestamp(t *testing.T) {
 			want: refDateOnly,
 		},
 		{
+			// 00:30 in Berlin summer time is still the previous UTC day.
+			name: "local time after midnight",
+			in:   "2026-04-18T00:30:00+02:00",
+			want: time.Date(2026, 4, 17, 22, 30, 0, 0, time.UTC),
+		},
+		{
 			name: "bare T-format no zone",
 			in:   "2026-04-18T15:04:05",
 			want: ref,
@@ -76,6 +82,9 @@ func TestParseTimestamp(t *testing.T) {
 			}
 			if !got.Equal(tc.want) {
 				t.Fatalf("parseTimestamp(%q) = %s, want %s", tc.in, got, tc.want)
+			}
+			if got.Location() != time.UTC {
+				t.Fatalf("parseTimestamp(%q) location = %v, want UTC", tc.in, got.Location())
 			}
 		})
 	}

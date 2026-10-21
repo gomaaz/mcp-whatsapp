@@ -88,8 +88,8 @@ func TestStoreChat_KeepsNewerTimeAndKnownName(t *testing.T) {
 	}
 }
 
-// Timestamps are stored with their UTC offset, so the "later" check must
-// compare instants, not strings.
+// Callers pass times in any offset, so the "later" check must compare
+// instants, not the local wall-clock text.
 func TestStoreChat_ComparesTimesAcrossOffsets(t *testing.T) {
 	s := openTestStore(t)
 	cest := time.FixedZone("CEST", 2*60*60)

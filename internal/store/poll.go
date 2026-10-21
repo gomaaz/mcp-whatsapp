@@ -90,7 +90,7 @@ func (s *Store) StorePollVote(ctx context.Context, pollMessageID, pollChatJID, v
 		     selected_options_json = excluded.selected_options_json,
 		     timestamp = excluded.timestamp
 		 WHERE excluded.timestamp >= poll_votes.timestamp`,
-		pollMessageID, pollChatJID, voterJID, string(payload), timestamp,
+		pollMessageID, pollChatJID, voterJID, string(payload), dbTime(timestamp),
 	)
 	if err != nil {
 		return fmt.Errorf("insert poll vote: %w", err)

@@ -75,9 +75,9 @@ var listMessagesMediaTypes = []string{"image", "video", "audio", "document", sto
 
 func (s *Server) registerListMessages() {
 	tool := mcp.NewTool("list_messages",
-		mcp.WithDescription(offlineSafePrefix+"Search and page through cached WhatsApp messages, optionally filtering by chat, sender, direction, media type, time range, and substring; can include surrounding context messages. Read-only; no side effects. Use get_message_context to expand around a single known message ID, or request_sync to backfill missing history. Returns a human-readable formatted text block, one line per message, each tagged with its `message_id` and `chat_jid`."),
-		mcp.WithString("after", mcp.Description("ISO-8601 UTC lower bound on message timestamp (inclusive)")),
-		mcp.WithString("before", mcp.Description("ISO-8601 UTC upper bound on message timestamp (inclusive)")),
+		mcp.WithDescription(offlineSafePrefix+"Search and page through cached WhatsApp messages, optionally filtering by chat, sender, direction, media type, time range, and substring; can include surrounding context messages. Read-only; no side effects. Use get_message_context to expand around a single known message ID, or request_sync to backfill missing history. Returns a human-readable formatted text block, one line per message, each starting with its UTC time (RFC 3339, `Z` suffix) and tagged with its `message_id` and `chat_jid`."),
+		mcp.WithString("after", mcp.Description("keep messages at or after this time (inclusive); "+timeFilterDesc)),
+		mcp.WithString("before", mcp.Description("keep messages strictly before this time (exclusive), so `before=2026-10-21` ends with 20 October UTC; "+timeFilterDesc)),
 		mcp.WithString("sender_phone_number", mcp.Description("filter to messages sent by this phone or JID ("+jidDesc+")")),
 		mcp.WithString("chat_jid", mcp.Description("filter to messages in this chat ("+jidDesc+")")),
 		mcp.WithString("query", mcp.Description("case-insensitive substring to match within message body")),

@@ -41,13 +41,19 @@ func normalizeRecipientToChatJID(recipient string) string {
 	return canonical + "@s.whatsapp.net"
 }
 
+// parseTimestamp reads a user-supplied time and returns it in UTC. It accepts
+// RFC 3339 with "Z" or an offset, the same without an offset or with a space
+// instead of the "T" (both read as UTC), and a bare "YYYY-MM-DD", which means
+// 00:00 UTC on that day.
 func parseTimestamp(s string) (time.Time, error) {
-	// Accept both RFC3339 and sqlite "2006-01-02 15:04:05".
 	formats := []string{time.RFC3339, time.RFC3339Nano, "2006-01-02T15:04:05", "2006-01-02 15:04:05", "2006-01-02"}
 	for _, f := range formats {
 		if t, err := time.Parse(f, s); err == nil {
-			return t, nil
+			return t.UTC(), nil
 		}
 	}
 	return time.Time{}, fmt.Errorf("unrecognised timestamp format: %s", s)
 }
+
+// timeFilterDesc explains the accepted forms of a time filter argument.
+const timeFilterDesc = "ISO-8601 time: RFC 3339 with `Z` or an offset (`2026-10-20T08:00:00+02:00`), without an offset it is read as UTC; a bare date `YYYY-MM-DD` means 00:00 UTC that day"

@@ -41,7 +41,7 @@ type Message struct {
 	Sender      string    `json:"sender"`                 // bare phone/user part
 	SenderPhone string    `json:"sender_phone,omitempty"` // full phone if resolvable
 	Content     string    `json:"content"`
-	Timestamp   time.Time `json:"timestamp"`
+	Timestamp   time.Time `json:"timestamp"` // UTC when read from the store
 	IsFromMe    bool      `json:"is_from_me"`
 	IsGroup     bool      `json:"is_group"`
 	MediaType   string    `json:"media_type,omitempty"`
@@ -65,7 +65,7 @@ type Message struct {
 type Chat struct {
 	JID             string    `json:"jid"`
 	Name            string    `json:"name"`
-	LastMessageTime time.Time `json:"last_message_time"`
+	LastMessageTime time.Time `json:"last_message_time"` // UTC
 	LastMessage     string    `json:"last_message,omitempty"`
 	LastSender      string    `json:"last_sender,omitempty"`
 	LastIsFromMe    bool      `json:"last_is_from_me"`
@@ -162,9 +162,9 @@ func (s *Store) Close() error {
 
 // StoreChat upserts a chat row. An existing row keeps its name when the new
 // one is empty, and its last_message_time only ever moves forward, so a
-// history sync of old messages cannot rewind a chat's recency. Timestamps are
-// stored as text with a UTC offset, so they are compared with julianday()
-// rather than as strings.
+// history sync of old messages cannot rewind a chat's recency. The time is
+// written as UTC text (dbTime); the comparison goes through julianday() so a
+// row in any older text format still compares correctly.
 func (s *Store) StoreChat(jid, name string, lastMessageTime time.Time) error {
 	_, err := s.db.Exec(`
 		INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)
@@ -176,7 +176,7 @@ func (s *Store) StoreChat(jid, name string, lastMessageTime time.Time) error {
 				THEN excluded.last_message_time
 				ELSE chats.last_message_time
 			END`,
-		jid, name, lastMessageTime,
+		jid, name, dbTime(lastMessageTime),
 	)
 	return err
 }
@@ -192,7 +192,7 @@ func (s *Store) StoreMessage(ctx context.Context, m Message, mediaKey, fileSHA25
 		`INSERT OR REPLACE INTO messages
 		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.ChatJID, m.Sender, m.Content, m.Timestamp, m.IsFromMe,
+		m.ID, m.ChatJID, m.Sender, m.Content, dbTime(m.Timestamp), m.IsFromMe,
 		m.MediaType, m.Filename, m.URL, m.DirectPath, mediaKey, fileSHA256, fileEncSHA256, fileLength,
 	)
 	return err
@@ -260,7 +260,7 @@ func (s *Store) GetMessageAtOrBefore(chatJID string, before time.Time) (id strin
 		FROM messages
 		WHERE chat_jid = ? AND timestamp <= ?
 		ORDER BY timestamp DESC
-		LIMIT 1`, chatJID, before).Scan(&id, &ts, &isFromMe)
+		LIMIT 1`, chatJID, dbTime(before)).Scan(&id, &ts, &isFromMe)
 	return
 }
 
@@ -356,8 +356,8 @@ CREATE TABLE IF NOT EXISTS poll_votes (
 
 // migrateSchema brings legacy databases up to the current layout. SQLite lacks
 // "ADD COLUMN IF NOT EXISTS", so we inspect PRAGMA table_info before issuing
-// any ALTER. Every step is idempotent — running migrateSchema twice is a
-// no-op on an up-to-date DB.
+// any ALTER. Data rewrites are tracked in PRAGMA user_version. Every step is
+// idempotent — running migrateSchema twice is a no-op on an up-to-date DB.
 func migrateSchema(db *sql.DB) error {
 	rows, err := db.Query("PRAGMA table_info(messages)")
 	if err != nil {
@@ -398,5 +398,5 @@ func migrateSchema(db *sql.DB) error {
 			return fmt.Errorf("add column direct_path: %w", err)
 		}
 	}
-	return nil
+	return normalizeTimestamps(db)
 }

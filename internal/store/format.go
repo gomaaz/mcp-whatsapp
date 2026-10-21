@@ -3,17 +3,19 @@ package store
 import (
 	"context"
 	"strings"
+	"time"
 )
 
 // FormatMessage renders a single message in the textual format expected by
 // downstream Claude clients. Every line carries the message ID and chat JID so
 // any message (text or media) can be passed on to get_message_context or
-// download_media.
+// download_media. The time is printed in UTC as RFC 3339 with a "Z" suffix,
+// the same form list_messages accepts for after/before.
 func (s *Store) FormatMessage(ctx context.Context, m Message, showChatInfo bool) string {
 	var b strings.Builder
 
 	b.WriteString("[")
-	b.WriteString(m.Timestamp.Format("2006-01-02 15:04:05"))
+	b.WriteString(m.Timestamp.UTC().Format(time.RFC3339))
 	b.WriteString("] [message_id=")
 	b.WriteString(m.ID)
 	b.WriteString(" chat_jid=")

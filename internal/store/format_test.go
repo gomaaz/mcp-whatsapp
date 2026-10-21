@@ -24,7 +24,7 @@ func TestFormatMessage_FromMe(t *testing.T) {
 	if !strings.Contains(got, "From: Me:") {
 		t.Fatalf("expected 'From: Me:' in output, got %q", got)
 	}
-	if !strings.HasPrefix(got, "[2026-01-02 03:04:05] [message_id=m1 chat_jid=447700000001@s.whatsapp.net] ") {
+	if !strings.HasPrefix(got, "[2026-01-02T03:04:05Z] [message_id=m1 chat_jid=447700000001@s.whatsapp.net] ") {
 		t.Fatalf("expected timestamp and ID prefix, got %q", got)
 	}
 	if !strings.HasSuffix(got, "\n") {
@@ -64,7 +64,7 @@ func TestFormatMessage_MediaPrefix(t *testing.T) {
 		MediaType: "image",
 	}
 	got := s.FormatMessage(ctx, m, false)
-	want := "[2026-01-02 03:04:05] [message_id=m3 chat_jid=447700000001@s.whatsapp.net] From: Me: [image] caption\n"
+	want := "[2026-01-02T03:04:05Z] [message_id=m3 chat_jid=447700000001@s.whatsapp.net] From: Me: [image] caption\n"
 	if got != want {
 		t.Fatalf("FormatMessage media:\n got %q\nwant %q", got, want)
 	}
@@ -85,7 +85,7 @@ func TestFormatMessage_TextLineCarriesIDs(t *testing.T) {
 		ChatName:  "Alice",
 	}
 	got := s.FormatMessage(ctx, m, true)
-	want := "[2026-01-02 03:04:05] [message_id=m5 chat_jid=447700000001@s.whatsapp.net] Chat: Alice From: Alice: plain text\n"
+	want := "[2026-01-02T03:04:05Z] [message_id=m5 chat_jid=447700000001@s.whatsapp.net] Chat: Alice From: Alice: plain text\n"
 	if got != want {
 		t.Fatalf("FormatMessage text:\n got %q\nwant %q", got, want)
 	}

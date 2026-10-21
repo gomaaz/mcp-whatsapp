@@ -129,6 +129,8 @@ internal/store/         SQLite cache, LID resolution, query layer
 
 Data lives under `./store/` (`-store DIR`): `messages.db` (message cache), `whatsapp.db` (whatsmeow session) and `.lock`. Query tools read SQLite; send and action tools call whatsmeow; incoming events are written to SQLite by a goroutine in the same process.
 
+All times are UTC. `messages.db` stores them as `2026-10-20 09:27:49+00:00`, `list_messages` prints them as `2026-10-20T09:27:49Z`, and JSON results use RFC 3339 with `Z`. Older builds stored the local offset of the machine; the first start after an upgrade rewrites those rows to UTC once and records that in `PRAGMA user_version`.
+
 ## Tools
 
 42 tools, grouped by purpose.
@@ -138,7 +140,7 @@ Data lives under `./store/` (`-store DIR`): `messages.db` (message cache), `what
 | Tool | Purpose |
 |---|---|
 | `search_contacts` | Substring search across cached contact names and phone numbers |
-| `list_messages` | Query + filter messages; returns formatted text with context windows |
+| `list_messages` | Query + filter messages; returns formatted text with context windows. `after` (inclusive) and `before` (exclusive) take RFC 3339 with `Z` or an offset, a time without offset (read as UTC) or a bare `YYYY-MM-DD` (00:00 UTC) |
 | `list_chats` | List chats with last-message preview; sort by activity or name |
 | `get_chat` | Chat metadata by JID |
 | `get_message_context` | Before/after window around a specific message |

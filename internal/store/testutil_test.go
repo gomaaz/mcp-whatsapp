@@ -51,6 +51,10 @@ func openTestStore(t *testing.T) *Store {
 		db.Close()
 		t.Fatalf("create reactions table: %v", err)
 	}
+	if err := createPendingRevokesTable(db); err != nil {
+		db.Close()
+		t.Fatalf("create pending_revokes table: %v", err)
+	}
 
 	// A second handle to the same shared-cache DB, playing the role of
 	// whatsmeowDB. LID lookups hit the same underlying tables.

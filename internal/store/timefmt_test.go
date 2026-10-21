@@ -149,17 +149,33 @@ func TestMigrateSchema_NormalizesTimestampsToUTC(t *testing.T) {
 		}
 	}
 
-	// The marker makes the rewrite run once: a row written in the old form
-	// after the migration is not touched by a second run.
-	if _, err := s.db.Exec(`INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me)
-		VALUES ('late', 'berlin@s.whatsapp.net', 'berlin', 'x', '2026-10-26 10:00:00+01:00', 0)`); err != nil {
-		t.Fatalf("insert late row: %v", err)
+	// An older build started again on the migrated store writes local
+	// offsets. The next start rewrites those rows too, although the marker
+	// is already set, and leaves the UTC rows and the junk value alone.
+	if _, err := s.db.Exec(`
+		INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me)
+			VALUES ('late', 'berlin@s.whatsapp.net', 'berlin', 'x', '2026-10-26 10:00:00+01:00', 0);
+		UPDATE chats SET last_message_time = '2026-10-26 10:00:00+01:00' WHERE jid = 'berlin@s.whatsapp.net';
+		UPDATE poll_votes SET timestamp = '2026-10-26 11:00:00+02:00';`); err != nil {
+		t.Fatalf("write late rows: %v", err)
 	}
 	if err := migrateSchema(s.db); err != nil {
 		t.Fatalf("second migrateSchema: %v", err)
 	}
-	if got, want := rawMsg("late"), "2026-10-26 10:00:00+01:00"; got != want {
-		t.Fatalf("second run rewrote a row: got %q, want %q", got, want)
+	for id, want := range map[string]string{
+		"late":   "2026-10-26 09:00:00+00:00",
+		"summer": "2026-10-25 00:30:00+00:00",
+		"junk":   "not a time",
+	} {
+		if got := rawMsg(id); got != want {
+			t.Errorf("after second run messages[%s].timestamp = %q, want %q", id, got, want)
+		}
+	}
+	if got, want := rawColumn(t, s.db, "SELECT CAST(last_message_time AS TEXT) FROM chats WHERE jid = 'berlin@s.whatsapp.net'"), "2026-10-26 09:00:00+00:00"; got != want {
+		t.Errorf("after second run chats.last_message_time = %q, want %q", got, want)
+	}
+	if got, want := rawColumn(t, s.db, "SELECT CAST(timestamp AS TEXT) FROM poll_votes"), "2026-10-26 09:00:00+00:00"; got != want {
+		t.Errorf("after second run poll_votes.timestamp = %q, want %q", got, want)
 	}
 }
 

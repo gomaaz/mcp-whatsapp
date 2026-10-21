@@ -90,12 +90,23 @@ func (c *Client) TranscribeMedia(ctx context.Context, messageID, chatJID string)
 		return res
 	}
 
-	if _, err := c.store.SetTranscript(ctx, messageID, chatJID, text); err != nil {
+	res.Message = "Transcribed locally with whisper.cpp"
+	updated, err := c.store.SetTranscript(ctx, messageID, chatJID, text, c.keepRevoked)
+	switch {
+	case err != nil:
 		c.log.Warnf("Failed to cache transcript for message %s: %v", c.redactor.MsgID(messageID), err)
+		res.Message += " (not cached)"
+	case !updated:
+		// The row changed while whisper ran. A delete for everyone that
+		// came in meanwhile also covers the text just made from it.
+		if now, err := c.store.GetAudioInfo(ctx, messageID, chatJID); err == nil && now.Revoked && !c.keepRevoked {
+			res.Message = "message was deleted by its sender; its audio is no longer stored"
+			return res
+		}
+		res.Message += " (not cached: the message is no longer in the cache)"
 	}
 	c.log.Infof("Transcribed audio message %s (%d s)", c.redactor.MsgID(messageID), info.AudioSeconds)
 	res.Success = true
 	res.Transcript = text
-	res.Message = "Transcribed locally with whisper.cpp"
 	return res
 }

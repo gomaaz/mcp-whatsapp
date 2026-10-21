@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -131,6 +132,106 @@ func (s *Store) ApplyRevoke(ctx context.Context, ch MessageChange, keepContent b
 		return 0, fmt.Errorf("apply revoke: %w", err)
 	}
 	return ChangeApplied, nil
+}
+
+// pendingRevokesTable holds deletes for everyone whose target message was
+// not cached when they arrived, for example a history sync that sends the
+// revoke in one chunk and the original in a later one. They are applied
+// once the original is stored (ApplyPendingRevokes). actor_senders is a JSON
+// array of MessageChange.ActorSenders.
+const pendingRevokesTable = `
+CREATE TABLE IF NOT EXISTS pending_revokes (
+	chat_jid TEXT NOT NULL,
+	message_id TEXT NOT NULL,
+	actor_senders TEXT NOT NULL,
+	actor_from_me BOOLEAN NOT NULL,
+	revoked_at TIMESTAMP NOT NULL,
+	PRIMARY KEY (chat_jid, message_id)
+);`
+
+func createPendingRevokesTable(db *sql.DB) error {
+	if _, err := db.Exec(pendingRevokesTable); err != nil {
+		return fmt.Errorf("create pending_revokes table: %w", err)
+	}
+	return nil
+}
+
+// AddPendingRevoke keeps a revoke whose target is not cached (ApplyRevoke
+// returned ChangeTargetMissing) until the target arrives. A second revoke of
+// the same message keeps the first one, as ApplyRevoke keeps the first
+// revoked_at.
+func (s *Store) AddPendingRevoke(ctx context.Context, ch MessageChange) error {
+	actors, err := json.Marshal(ch.ActorSenders)
+	if err != nil {
+		return fmt.Errorf("add pending revoke: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO pending_revokes (chat_jid, message_id, actor_senders, actor_from_me, revoked_at)
+		VALUES (?, ?, ?, ?, ?)`,
+		ch.ChatJID, ch.ID, string(actors), ch.ActorFromMe, dbTime(ch.At),
+	); err != nil {
+		return fmt.Errorf("add pending revoke: %w", err)
+	}
+	return nil
+}
+
+// ApplyPendingRevokes applies the pending revokes of chatJID, or only the one
+// for messageID when it is not empty, through ApplyRevoke with its author
+// check. A revoke leaves the table once its target is cached, whether it was
+// applied or refused; one whose target is still missing stays. It returns the
+// revokes that were applied.
+func (s *Store) ApplyPendingRevokes(ctx context.Context, chatJID, messageID string, keepContent bool) ([]MessageChange, error) {
+	q := "SELECT message_id, actor_senders, actor_from_me, revoked_at FROM pending_revokes WHERE chat_jid = ?"
+	args := []any{chatJID}
+	if messageID != "" {
+		q += " AND message_id = ?"
+		args = append(args, messageID)
+	}
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("read pending revokes: %w", err)
+	}
+	var pending []MessageChange
+	for rows.Next() {
+		var (
+			ch     = MessageChange{ChatJID: chatJID}
+			actors string
+		)
+		if err := rows.Scan(&ch.ID, &actors, &ch.ActorFromMe, &ch.At); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan pending revoke: %w", err)
+		}
+		if err := json.Unmarshal([]byte(actors), &ch.ActorSenders); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("decode pending revoke actors: %w", err)
+		}
+		pending = append(pending, ch)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("read pending revokes: %w", err)
+	}
+	rows.Close()
+
+	var applied []MessageChange
+	for _, ch := range pending {
+		res, err := s.ApplyRevoke(ctx, ch, keepContent)
+		if err != nil {
+			return applied, err
+		}
+		if res == ChangeTargetMissing {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx,
+			"DELETE FROM pending_revokes WHERE chat_jid = ? AND message_id = ?", ch.ChatJID, ch.ID,
+		); err != nil {
+			return applied, fmt.Errorf("drop pending revoke: %w", err)
+		}
+		if res == ChangeApplied {
+			applied = append(applied, ch)
+		}
+	}
+	return applied, nil
 }
 
 // MessageRevoked reports whether the sender deleted a cached message for

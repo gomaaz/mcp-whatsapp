@@ -636,6 +636,10 @@ func (s *Store) scanListMessageRow(row interface {
 			m.QuotedSender = origSender.String
 		}
 	}
+	if m.QuotedSender == QuotedSenderMe && !origIsFromMe.Valid {
+		// Not cached, but the reply named our own account as the author.
+		m.QuotedFromMe = true
+	}
 	m.IsGroup = strings.HasSuffix(m.ChatJID, "@g.us")
 	m.SenderPhone = s.resolveSenderPhone(m.Sender)
 	if m.QuotedSender != "" {
@@ -659,12 +663,12 @@ func (s *Store) resolveSenderPhone(sender string) string {
 	return sender
 }
 
-// chatSelectSQL returns the shared 6-column chat projection (jid, name,
-// last_message_time, plus the latest message's content/sender/is_from_me
-// when includeLastMessage) used by both ListChats and GetChat. alias
-// qualifies the chat column references; pass "chats" for an unaliased FROM
-// clause (ListChats) or a short alias like "c" when the caller appends its
-// own WHERE clause on that alias (GetChat).
+// chatSelectSQL returns the shared 8-column chat projection (jid, name,
+// last_message_time, plus the latest message's content/sender/is_from_me/
+// edited_at/revoked_at when includeLastMessage) used by both ListChats and
+// GetChat. alias qualifies the chat column references; pass "chats" for an
+// unaliased FROM clause (ListChats) or a short alias like "c" when the
+// caller appends its own WHERE clause on that alias (GetChat).
 func chatSelectSQL(alias string, includeLastMessage bool) string {
 	from := "chats"
 	if alias != "chats" {
@@ -677,6 +681,8 @@ func chatSelectSQL(alias string, includeLastMessage bool) string {
 		%s.last_message_time,
 		NULL,
 		NULL,
+		NULL,
+		NULL,
 		NULL
 	FROM %s`, alias, alias, alias, from)
 	}
@@ -686,7 +692,9 @@ func chatSelectSQL(alias string, includeLastMessage bool) string {
 		%s.last_message_time,
 		latest_msg.content,
 		latest_msg.sender,
-		latest_msg.is_from_me
+		latest_msg.is_from_me,
+		latest_msg.edited_at,
+		latest_msg.revoked_at
 	FROM %s
 		LEFT JOIN messages AS latest_msg ON %s.jid = latest_msg.chat_jid
 		AND latest_msg.rowid = (
@@ -696,7 +704,9 @@ func chatSelectSQL(alias string, includeLastMessage bool) string {
 		)`, alias, alias, alias, from, alias, alias)
 }
 
-// scanChatRow scans the 6-column projection used by ListChats and GetChat.
+// scanChatRow scans the 8-column projection used by ListChats and GetChat.
+// The last-message preview carries the same "[deleted by sender]" and
+// "[edited]" markers as a list_messages line.
 func scanChatRow(row interface {
 	Scan(dest ...any) error
 }) (Chat, error) {
@@ -707,14 +717,16 @@ func scanChatRow(row interface {
 		lastMessage  sql.NullString
 		lastSender   sql.NullString
 		lastIsFromMe sql.NullBool
+		lastEdited   sql.NullTime
+		lastRevoked  sql.NullTime
 	)
-	if err := row.Scan(&jid, &name, &lastTime, &lastMessage, &lastSender, &lastIsFromMe); err != nil {
+	if err := row.Scan(&jid, &name, &lastTime, &lastMessage, &lastSender, &lastIsFromMe, &lastEdited, &lastRevoked); err != nil {
 		return Chat{}, err
 	}
 	c := Chat{
 		JID:          jid,
 		Name:         name.String,
-		LastMessage:  lastMessage.String,
+		LastMessage:  previewText(lastMessage.String, lastEdited.Valid, lastRevoked.Valid),
 		LastSender:   lastSender.String,
 		LastIsFromMe: lastIsFromMe.Bool,
 	}
@@ -723,4 +735,17 @@ func scanChatRow(row interface {
 	}
 	c.IsGroup = strings.HasSuffix(c.JID, "@g.us")
 	return c, nil
+}
+
+// previewText renders the last-message preview of a chat: the text, prefixed
+// with "[deleted by sender]" when its sender deleted it (only -keep-revoked
+// leaves text behind) or "[edited]" when it was edited.
+func previewText(content string, edited, revoked bool) string {
+	switch {
+	case revoked:
+		return strings.TrimSpace(revokedMarker + " " + content)
+	case edited && content != "":
+		return "[edited] " + content
+	}
+	return content
 }

@@ -6,8 +6,11 @@ import (
 	"time"
 
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/sealjay/mcp-whatsapp/internal/store"
 )
 
 func TestContextInfoOf(t *testing.T) {
@@ -50,6 +53,15 @@ func TestQuotedSnippet(t *testing.T) {
 		{"voice note", &waProto.Message{AudioMessage: &waProto.AudioMessage{}}, "[audio]"},
 		{"document", &waProto.Message{DocumentMessage: &waProto.DocumentMessage{FileName: proto.String("Rechnung 12.pdf")}}, "[document: Rechnung 12.pdf]"},
 		{"sticker", &waProto.Message{StickerMessage: &waProto.StickerMessage{}}, "[sticker]"},
+		{"document with caption", &waProto.Message{DocumentWithCaptionMessage: &waProto.FutureProofMessage{
+			Message: &waProto.Message{DocumentMessage: &waProto.DocumentMessage{FileName: proto.String("Angebot.pdf"), Caption: proto.String("bitte prüfen")}},
+		}}, "[document: Angebot.pdf] bitte prüfen"},
+		{"view-once image", &waProto.Message{ViewOnceMessageV2: &waProto.FutureProofMessage{
+			Message: &waProto.Message{ImageMessage: &waProto.ImageMessage{}},
+		}}, "[image]"},
+		{"ephemeral text", &waProto.Message{EphemeralMessage: &waProto.FutureProofMessage{
+			Message: &waProto.Message{Conversation: proto.String("kurz")},
+		}}, "kurz"},
 	}
 	for _, tc := range cases {
 		if got := quotedSnippet(tc.msg); got != tc.want {
@@ -158,7 +170,44 @@ func TestHandleHistorySync_StoresReplyContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("history reply not stored: %v", err)
 	}
-	if quotedID != "ORIG-H" || quotedSender != "491700000000" || quotedText != "[document: Angebot.pdf]" || !forwarded {
+	// The quoted document is our own (491700000000 is the paired number).
+	if quotedID != "ORIG-H" || quotedSender != store.QuotedSenderMe || quotedText != "[document: Angebot.pdf]" || !forwarded {
 		t.Errorf("stored quote = id %q sender %q text %q forwarded %v", quotedID, quotedSender, quotedText, forwarded)
+	}
+}
+
+// TestNormalizeIncomingMessage_QuotesOwnMessage: a reply to one of our own
+// messages is marked with store.QuotedSenderMe whether the quote names our
+// phone number, our LID or a LID that resolves to our number, so it reads
+// "from Me" without the cached original. Someone else's message is not.
+func TestNormalizeIncomingMessage_QuotesOwnMessage(t *testing.T) {
+	const own = "491700000000"
+	s := newTestStoreWithLIDMap(t, map[string]string{"55554444": own})
+	c := newClientWithContacts(t, s, own, nil)
+	c.wa.Store.LID = types.NewJID("11112222", types.HiddenUserServer)
+
+	cases := map[string]string{
+		own + ":7@s.whatsapp.net":     store.QuotedSenderMe,
+		"11112222:3@lid":              store.QuotedSenderMe,
+		"55554444@lid":                store.QuotedSenderMe,
+		"447700000001@s.whatsapp.net": "447700000001",
+		"":                            "",
+	}
+	for participant, want := range cases {
+		nm := c.normalizeIncomingMessage(
+			"447700000001@s.whatsapp.net", "447700000001@s.whatsapp.net", "447700000001",
+			false, false, "", "reply-own", time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+			&waProto.Message{ExtendedTextMessage: &waProto.ExtendedTextMessage{
+				Text: proto.String("passt"),
+				ContextInfo: &waProto.ContextInfo{
+					StanzaID:      proto.String("ORIG-OWN"),
+					Participant:   proto.String(participant),
+					QuotedMessage: &waProto.Message{Conversation: proto.String("Angebot anbei")},
+				},
+			}},
+		)
+		if nm.msg.QuotedSender != want {
+			t.Errorf("participant %q: QuotedSender = %q, want %q", participant, nm.msg.QuotedSender, want)
+		}
 	}
 }

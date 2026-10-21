@@ -54,18 +54,21 @@ var timestampColumns = []struct{ table, column string }{
 // normalizeTimestamps rewrites timestamps that older builds stored with the
 // local offset of the machine ("2026-10-20 11:27:49+02:00") to UTC text in
 // timestampLayout, so that rows written before and after the upgrade compare
-// correctly as text. It runs once, in one transaction, and then records
-// schemaVersionUTCTimestamps in PRAGMA user_version. Values it cannot parse
-// are left untouched; rewriting a value that is already UTC is a no-op, so the
-// step stays idempotent even without the marker.
+// correctly as text. The first run, in one transaction, looks at every row
+// and then records schemaVersionUTCTimestamps in PRAGMA user_version. Later
+// runs still rewrite rows that do not end in "+00:00": an older binary
+// started again on the same store (a rollback, or a swapped executable)
+// writes local offsets, and those must not stay mixed in with the UTC rows.
+// That check filters on the text suffix, so it costs one scan per column and
+// writes nothing when every row is UTC. Values it cannot parse are left
+// untouched; rewriting a value that is already UTC is a no-op, so the step
+// is idempotent.
 func normalizeTimestamps(db *sql.DB) error {
 	var version int
 	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("read user_version: %w", err)
 	}
-	if version >= schemaVersionUTCTimestamps {
-		return nil
-	}
+	onlyNonUTC := version >= schemaVersionUTCTimestamps
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -74,12 +77,14 @@ func normalizeTimestamps(db *sql.DB) error {
 	defer func() { _ = tx.Rollback() }()
 
 	for _, c := range timestampColumns {
-		if err := normalizeTimestampColumn(tx, c.table, c.column); err != nil {
+		if err := normalizeTimestampColumn(tx, c.table, c.column, onlyNonUTC); err != nil {
 			return err
 		}
 	}
-	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersionUTCTimestamps)); err != nil {
-		return fmt.Errorf("set user_version: %w", err)
+	if !onlyNonUTC {
+		if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersionUTCTimestamps)); err != nil {
+			return fmt.Errorf("set user_version: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit timestamp migration: %w", err)
@@ -87,9 +92,11 @@ func normalizeTimestamps(db *sql.DB) error {
 	return nil
 }
 
-// normalizeTimestampColumn rewrites one column. A table that does not exist
-// yet (a legacy database without poll_votes) is skipped.
-func normalizeTimestampColumn(tx *sql.Tx, table, column string) error {
+// normalizeTimestampColumn rewrites one column. With onlyNonUTC it reads only
+// the rows whose text does not end in "+00:00", the suffix every value in
+// timestampLayout has. A table that does not exist yet (a legacy database
+// without poll_votes) is skipped.
+func normalizeTimestampColumn(tx *sql.Tx, table, column string, onlyNonUTC bool) error {
 	var exists int
 	if err := tx.QueryRow(
 		"SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)", table,
@@ -103,8 +110,11 @@ func normalizeTimestampColumn(tx *sql.Tx, table, column string) error {
 	// CAST hides the TIMESTAMP declared type, so the driver hands back the raw
 	// text instead of a parsed time.Time (which would turn an unparseable
 	// value into the zero time).
-	rows, err := tx.Query(fmt.Sprintf(
-		"SELECT rowid, CAST(%[1]s AS TEXT) FROM %[2]s WHERE typeof(%[1]s) = 'text'", column, table))
+	q := fmt.Sprintf("SELECT rowid, CAST(%[1]s AS TEXT) FROM %[2]s WHERE typeof(%[1]s) = 'text'", column, table)
+	if onlyNonUTC {
+		q += fmt.Sprintf(" AND %s NOT LIKE '%%+00:00'", column)
+	}
+	rows, err := tx.Query(q)
 	if err != nil {
 		return fmt.Errorf("read %s.%s: %w", table, column, err)
 	}

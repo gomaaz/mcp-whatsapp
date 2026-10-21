@@ -147,7 +147,7 @@ func TestTranscribeMedia_TranscribesOnceThenServesCache(t *testing.T) {
 
 func TestTranscribeMedia_CachedTranscriptNeedsNoWhisper(t *testing.T) {
 	f := newTranscribeFixture(t, 45)
-	if _, err := f.s.SetTranscript(context.Background(), trMsgID, trJID, "schon da"); err != nil {
+	if _, err := f.s.SetTranscript(context.Background(), trMsgID, trJID, "schon da", false); err != nil {
 		t.Fatal(err)
 	}
 	f.c.whisper = media.WhisperConfig{}
@@ -220,5 +220,45 @@ func TestTranscribeMedia_RejectsNonAudioAndUnknown(t *testing.T) {
 	}
 	if f.downloads != 0 || f.transcribes != 0 {
 		t.Fatalf("downloads=%d transcribes=%d, want 0/0", f.downloads, f.transcribes)
+	}
+}
+
+// TestTranscribeMedia_RevokedWhileTranscribing: a delete for everyone that
+// lands while whisper runs. By default the text made from the deleted audio
+// is not returned and not cached. With -keep-revoked it is returned and
+// cached, so a repeat call does not run whisper again.
+func TestTranscribeMedia_RevokedWhileTranscribing(t *testing.T) {
+	for _, keep := range []bool{false, true} {
+		f := newTranscribeFixture(t, 10)
+		f.c.keepRevoked = keep
+		ctx := context.Background()
+		f.c.transcribe = func(context.Context, media.WhisperConfig, string) (string, error) {
+			f.transcribes++
+			if _, err := f.s.ApplyRevoke(ctx, store.MessageChange{
+				ChatJID: trJID, ID: trMsgID, ActorSenders: []string{"447700000099"}, At: time.Now(),
+			}, keep); err != nil {
+				t.Fatal(err)
+			}
+			return "meine IBAN lautet", nil
+		}
+
+		res := f.c.TranscribeMedia(ctx, trMsgID, trJID)
+		if !keep {
+			if res.Success || res.Transcript != "" || !strings.Contains(res.Message, "deleted by its sender") {
+				t.Fatalf("keep=false: result = %+v, want the deleted-message error and no text", res)
+			}
+			info, err := f.s.GetAudioInfo(ctx, trMsgID, trJID)
+			if err != nil || info.Transcript != "" {
+				t.Fatalf("keep=false: cached transcript = %q (err %v), want none", info.Transcript, err)
+			}
+			continue
+		}
+		if !res.Success || res.Transcript != "meine IBAN lautet" {
+			t.Fatalf("keep=true: result = %+v, want the transcript", res)
+		}
+		again := f.c.TranscribeMedia(ctx, trMsgID, trJID)
+		if !again.Cached || f.transcribes != 1 {
+			t.Fatalf("keep=true: repeat call = %+v after %d whisper runs, want it served from the cache", again, f.transcribes)
+		}
 	}
 }

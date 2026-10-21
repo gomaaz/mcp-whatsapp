@@ -266,14 +266,35 @@ func wavSeconds(size int64) float64 {
 }
 
 // readTranscript prefers the .txt file whisper.cpp wrote with -otxt and falls
-// back to its stdout. The text is collapsed onto one line.
+// back to its stdout. The text is collapsed onto one line and cleaned by
+// speechText, so audio without speech comes back as "".
 func readTranscript(txtPath string, stdout []byte) string {
 	if data, err := os.ReadFile(txtPath); err == nil {
-		if text := strings.Join(strings.Fields(string(data)), " "); text != "" {
+		if text := speechText(string(data)); text != "" {
 			return text
 		}
 	}
-	return strings.Join(strings.Fields(string(stdout)), " ")
+	return speechText(string(stdout))
+}
+
+// blankAudioRe matches whisper.cpp's marker for a stretch without sound.
+var blankAudioRe = regexp.MustCompile(`(?i)\[\s*blank_audio\s*\]`)
+
+// annotationsOnlyRe matches text made only of bracketed, parenthesised or
+// starred annotations, which is how whisper labels audio without speech:
+// "[ Silence ]", "(music)", "[Musik]", "*Applaus*".
+var annotationsOnlyRe = regexp.MustCompile(`^(?:(?:\[[^\]]*\]|\([^)]*\)|\*[^*]*\*)\s*)+$`)
+
+// speechText collapses whisper output onto one line and returns "" when it
+// holds no speech: [BLANK_AUDIO] markers are removed wherever they are, and
+// what is left counts as no speech when it consists only of annotations.
+// Annotations next to spoken words stay, they may be part of the text.
+func speechText(raw string) string {
+	text := strings.Join(strings.Fields(blankAudioRe.ReplaceAllString(raw, " ")), " ")
+	if annotationsOnlyRe.MatchString(text) {
+		return ""
+	}
+	return text
 }
 
 // windowsEnvKeys are passed in addition to minimalEnv: Windows programs need

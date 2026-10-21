@@ -206,6 +206,36 @@ func TestTranscribe_NoSpeech(t *testing.T) {
 	}
 }
 
+// TestTranscribe_NonSpeechMarkersAreNoSpeech: for silence or noise whisper
+// prints markers such as [BLANK_AUDIO] instead of nothing. They must end as
+// ErrNoSpeech, so nothing is cached or searched as if it were text.
+func TestTranscribe_NonSpeechMarkersAreNoSpeech(t *testing.T) {
+	// A literal \n in the fake's instructions becomes a line break.
+	for _, out := range []string{"[BLANK_AUDIO]", ` [BLANK_AUDIO]\n [BLANK_AUDIO] `, "[ Silence ]", "(music)", "[Musik] (Stille)"} {
+		f := newFakeSetup(t, "txt="+out+"\nstdout="+out+"\n", 2)
+		if got, err := Transcribe(context.Background(), f.cfg, f.input); !errors.Is(err, ErrNoSpeech) {
+			t.Errorf("whisper output %q: Transcribe = %q, %v; want ErrNoSpeech", out, got, err)
+		}
+	}
+}
+
+func TestSpeechText(t *testing.T) {
+	cases := map[string]string{
+		"":                                  "",
+		"  Hallo  Daniel \n":                "Hallo Daniel",
+		"[BLANK_AUDIO] Hallo [BLANK_AUDIO]": "Hallo",
+		"[blank_audio]":                     "",
+		"(Musik) Hallo, hier ist Anna":      "(Musik) Hallo, hier ist Anna",
+		"*Applaus*":                         "",
+		"Preis [unverständlich] Euro":       "Preis [unverständlich] Euro",
+	}
+	for in, want := range cases {
+		if got := speechText(in); got != want {
+			t.Errorf("speechText(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestTranscribe_Timeout(t *testing.T) {
 	f := newFakeSetup(t, "sleep=30s\nstdout=too late\n", 2)
 	f.cfg.Timeout = 500 * time.Millisecond

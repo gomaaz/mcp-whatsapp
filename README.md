@@ -148,9 +148,9 @@ internal/store/         SQLite cache, LID resolution, query layer
 
 Data lives under `./store/` (`-store DIR`): `messages.db` (message cache), `whatsapp.db` (whatsmeow session) and `.lock`. Query tools read SQLite; send and action tools call whatsmeow; incoming events are written to SQLite by a goroutine in the same process.
 
-All times are UTC. `messages.db` stores them as `2026-10-20 09:27:49+00:00`, `list_messages` prints them as `2026-10-20T09:27:49Z`, and JSON results use RFC 3339 with `Z`. Older builds stored the local offset of the machine; the first start after an upgrade rewrites those rows to UTC once and records that in `PRAGMA user_version`.
+All times are UTC. `messages.db` stores them as `2026-10-20 09:27:49+00:00`, `list_messages` prints them as `2026-10-20T09:27:49Z`, and JSON results use RFC 3339 with `Z`. Older builds stored the local offset of the machine; the first start after an upgrade rewrites those rows to UTC and records that in `PRAGMA user_version`. Every later start rewrites rows that still carry another offset, so running an older build on the same store in between (a rollback) does not leave mixed offsets behind.
 
-Edits and deletes for everyone update the cached message instead of being stored as messages of their own. An edit replaces the text and sets `edited_at`; an edit older than the one already stored is ignored, so a history sync cannot roll the text back. A delete sets `revoked_at` and, unless `-keep-revoked` is set, blanks the text and media keys, and also drops the copy of the text that replies to it carry. `list_messages` marks such lines `[edited]` or `[deleted by sender]`, and `get_message_context` returns both fields. A reply to a deleted message shows `[deleted by sender]` as its quoted text (followed by the media marker, or by the kept text with `-keep-revoked`). A change is applied only when it comes from the message's author (or one of your own devices for your own messages); a group admin deleting someone else's message is ignored.
+Edits and deletes for everyone update the cached message instead of being stored as messages of their own. An edit replaces the text and sets `edited_at`; an edit older than the one already stored is ignored, so a history sync cannot roll the text back. A delete sets `revoked_at` and, unless `-keep-revoked` is set, blanks the text and media keys, and also drops the copy of the text that replies to it carry. `list_messages` marks such lines `[edited]` or `[deleted by sender]`, and `get_message_context` returns both fields. A reply to a deleted message shows `[deleted by sender]` as its quoted text (followed by the media marker, or by the kept text with `-keep-revoked`). A change is applied only when it comes from the message's author (or one of your own devices for your own messages); a group admin deleting someone else's message is ignored. A delete that arrives before the message it deletes (history syncs send them in separate chunks) is kept in `pending_revokes` and applied as soon as the message is stored. The last-message preview of `list_chats` and `get_chat` carries the same `[deleted by sender]` and `[edited]` markers. A reply to one of your own messages reads `from Me` even when that message is not cached.
 
 Message types without text of their own are stored with a readable line instead of being dropped: `[location] name, address (lat,lon) https://maps.google.com/?q=lat,lon`, `[live location] …`, `[contact] Name, TEL …` (read from the vCard) and `[contacts: n] names`. Stickers are stored as media type `sticker` and video notes as `video`; `download_media` fetches both. A message this device could not decrypt is stored as `[message could not be decrypted - check the phone]`; when WhatsApp's automatic retry succeeds, the real message replaces it. Reactions are kept in a table of their own, so they never show up as a chat's last message or as a message in `list_unanswered`. `list_messages` ends a reacted-to line with `[reactions: 👍 Name, ❤️ Me]`, and `get_message_context` returns them as `reactions`. Removing a reaction removes it from the cache as well.
 
@@ -169,7 +169,7 @@ Message types without text of their own are stored with a readable line instead 
 | `get_chat` | Chat metadata by JID |
 | `get_message_context` | Before/after window around a specific message, with each message's emoji reactions |
 | `download_media` | Download persisted media to a local path |
-| `transcribe_media` | Transcribe a voice note or other audio message locally with whisper.cpp (see `WHATSAPP_MCP_WHISPER_*` above). The audio is fetched like `download_media`, nothing is sent to the chat. The transcript is cached: repeat calls return it straight away, `list_messages` shows it on the line (`[voice note, 45 s] transcript: "…"`) and its `query` searches it. Deleting a message for everyone also deletes its transcript unless `-keep-revoked` is set |
+| `transcribe_media` | Transcribe a voice note or other audio message locally with whisper.cpp (see `WHATSAPP_MCP_WHISPER_*` above). The audio is fetched like `download_media`, nothing is sent to the chat. The transcript is cached: repeat calls return it straight away, `list_messages` shows it on the line (`[voice note, 45 s] transcript: "…"`) and its `query` searches it. Deleting a message for everyone also deletes its transcript unless `-keep-revoked` is set, also while the transcription is still running. Audio without speech, for which whisper prints only markers such as `[BLANK_AUDIO]` or `(music)`, gives an error and nothing is cached |
 | `request_sync` | Ask WhatsApp to backfill history for a chat |
 
 ### Send
@@ -192,8 +192,8 @@ Message types without text of their own are stored with a readable line instead 
 | `mark_chat_read` | Ack the most recent incoming messages in a chat to clear the unread badge |
 | `send_reaction` | React to a message (empty emoji clears an existing reaction) |
 | `send_reply` | Text reply that quotes a prior message |
-| `edit_message` | Edit a previously-sent message |
-| `delete_message` | Revoke (delete for everyone) a message |
+| `edit_message` | Edit a previously-sent message; the cached copy gets the new text |
+| `delete_message` | Revoke (delete for everyone) a message; your own cached message is marked `[deleted by sender]` |
 | `send_typing` | Set per-chat composing / recording presence |
 
 ### Groups

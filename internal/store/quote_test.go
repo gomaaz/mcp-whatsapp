@@ -111,6 +111,9 @@ func TestGetMessageContext_QuotedOriginal(t *testing.T) {
 			Timestamp:       time.Date(2026, 1, 9, 11, 2, 0, 0, time.UTC),
 			QuotedMessageID: "gone", QuotedSender: "447700000001", QuotedText: "embedded snippet",
 			IsForwarded: true},
+		{ID: "q4", ChatJID: alice, Sender: "447700000001", Content: "reply to my old offer",
+			Timestamp:       time.Date(2026, 1, 9, 11, 3, 0, 0, time.UTC),
+			QuotedMessageID: "old-own", QuotedSender: QuotedSenderMe, QuotedText: "[document: Angebot.pdf]"},
 	}
 	for _, m := range replies {
 		if err := s.StoreMessage(ctx, m, nil, nil, nil, 0); err != nil {
@@ -145,6 +148,18 @@ func TestGetMessageContext_QuotedOriginal(t *testing.T) {
 		if !strings.Contains(string(raw), key) {
 			t.Errorf("JSON lacks %s: %s", key, raw)
 		}
+	}
+
+	// A reply to an own message that is not cached reads "from Me".
+	own, err := s.GetMessageContext(ctx, "q4", 0, 0)
+	if err != nil {
+		t.Fatalf("GetMessageContext q4: %v", err)
+	}
+	if !own.Message.QuotedFromMe || own.Message.QuotedText != "[document: Angebot.pdf]" {
+		t.Errorf("reply to uncached own message = %+v", own.Message)
+	}
+	if line := s.FormatMessage(ctx, own.Message, false); !strings.Contains(line, `(reply to old-own from Me: "[document: Angebot.pdf]")`) {
+		t.Errorf("formatted reply to uncached own message = %q", line)
 	}
 
 	// list_messages goes through the same projection.

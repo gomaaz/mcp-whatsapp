@@ -426,3 +426,82 @@ func TestHandleHistorySync_ForeignEditBeforeOriginal(t *testing.T) {
 		}
 	})
 }
+
+// TestHandleHistorySync_RevokeBeforeOriginalInLaterSync: a history sync can
+// send a delete in one event and the deleted message in a later one. The
+// delete waits as pending and is applied when the message is stored, so the
+// deleted text does not come back.
+func TestHandleHistorySync_RevokeBeforeOriginalInLaterSync(t *testing.T) {
+	c, s := newHistoryChangeClient(t)
+
+	c.handleHistorySync(historySync(chgDM,
+		historyWebMessageAt("rev-early", false, chgTime.Add(5*time.Minute), revokePayload("orig-late"))))
+	c.handleHistorySync(historySync(chgDM,
+		historyWebMessageAt("orig-late", false, chgTime.Add(time.Minute), text("Kontonummer, bitte löschen"))))
+
+	if r := readChg(t, s, chgDM, "orig-late"); r.content != "" || !r.revoked {
+		t.Errorf("orig-late = %+v, want blanked and revoked", r)
+	}
+	var pending int
+	if err := s.DB().QueryRow("SELECT COUNT(*) FROM pending_revokes").Scan(&pending); err != nil || pending != 0 {
+		t.Errorf("pending revokes left = %d (err %v), want 0", pending, err)
+	}
+}
+
+// TestHandleMessage_RevokeBeforeOriginal: the same for a live delete of a
+// message that only arrives afterwards (a retried delivery, a sync).
+func TestHandleMessage_RevokeBeforeOriginal(t *testing.T) {
+	c, s := newChangeClient(t)
+	c.handleMessage(liveMessage(t, chgDM, chgDM, "rev-live", false, chgTime.Add(time.Minute), revokePayload("late-live")))
+	c.handleMessage(liveMessage(t, chgDM, chgDM, "late-live", false, chgTime, text("doch nicht")))
+
+	if r := readChg(t, s, chgDM, "late-live"); r.content != "" || !r.revoked {
+		t.Errorf("late-live = %+v, want blanked and revoked", r)
+	}
+}
+
+// TestOwnChange_UpdatesCacheForOwnSends: edit_message and delete_message
+// update the cached row themselves, since whatsmeow does not echo our own
+// sends. Only our own message is changed; a revoke of someone else's (as a
+// group admin) leaves the cache alone.
+func TestOwnChange_UpdatesCacheForOwnSends(t *testing.T) {
+	const own = "491700000000"
+	s := newTestStoreWithLIDMap(t, map[string]string{"99887766": "447700000001"})
+	c := newClientWithContacts(t, s, own, nil)
+	if err := s.StoreChat(chgDM, "Alice", chgTime); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []store.Message{
+		{ID: "own-1", ChatJID: chgDM, Sender: own, IsFromMe: true, Content: "Termin Dienstag", Timestamp: chgTime},
+		{ID: "own-2", ChatJID: chgDM, Sender: own, IsFromMe: true, Content: "falscher Chat", Timestamp: chgTime},
+		{ID: "theirs", ChatJID: chgDM, Sender: "447700000001", Content: "Danke", Timestamp: chgTime},
+	} {
+		if err := s.StoreMessage(t.Context(), m, nil, nil, nil, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The tool may be called with the chat's LID; the cache keys it by phone.
+	lidChat := types.NewJID("99887766", types.HiddenUserServer)
+	if res := c.applyEdit(t.Context(), c.ownChange(lidChat, "own-1"), "Termin Mittwoch"); res != store.ChangeApplied {
+		t.Fatalf("own edit = %v, want applied", res)
+	}
+	if r := readChg(t, s, chgDM, "own-1"); r.content != "Termin Mittwoch" || !r.edited {
+		t.Errorf("own-1 = %+v, want the new text with edited_at", r)
+	}
+
+	dm := types.NewJID("447700000001", types.DefaultUserServer)
+	if res := c.applyRevoke(t.Context(), c.ownChange(dm, "own-2")); res != store.ChangeApplied {
+		t.Fatalf("own revoke = %v, want applied", res)
+	}
+	if r := readChg(t, s, chgDM, "own-2"); r.content != "" || !r.revoked {
+		t.Errorf("own-2 = %+v, want blanked and revoked", r)
+	}
+
+	if res := c.applyRevoke(t.Context(), c.ownChange(dm, "theirs")); res != store.ChangeSenderMismatch {
+		t.Errorf("revoke of someone else's message = %v, want sender mismatch", res)
+	}
+	if r := readChg(t, s, chgDM, "theirs"); r.revoked || r.content != "Danke" {
+		t.Errorf("theirs = %+v, want untouched", r)
+	}
+}

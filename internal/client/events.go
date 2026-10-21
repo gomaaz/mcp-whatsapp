@@ -157,6 +157,9 @@ func (c *Client) normalizeIncomingMessage(
 		if quotedID := ci.GetStanzaID(); quotedID != "" {
 			m.QuotedMessageID = quotedID
 			m.QuotedSender = c.quotedSenderUser(ci.GetParticipant())
+			if c.isOwnParticipant(ci.GetParticipant(), m.QuotedSender) {
+				m.QuotedSender = store.QuotedSenderMe
+			}
 			m.QuotedText = quotedSnippet(ci.GetQuotedMessage())
 		}
 	}
@@ -257,6 +260,7 @@ func (c *Client) handleMessage(msg *events.Message) {
 		c.log.Warnf("Failed to store message: %v", err)
 		return
 	}
+	c.applyPendingRevokes(context.Background(), nm.chatJID, msg.Info.ID)
 
 	direction := "<-"
 	if msg.Info.IsFromMe {
@@ -291,7 +295,8 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 		// Edits and revokes are applied after the conversation's messages
 		// are stored, so each one finds the message it changes wherever it
 		// sits in the payload. Edits then run oldest first, each through the
-		// author check in ApplyEdit.
+		// author check in ApplyEdit. A revoke whose message is in a later
+		// sync is kept as pending until it arrives.
 		var (
 			edits   []historyEdit
 			revokes []store.MessageChange
@@ -405,6 +410,9 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 				syncedCount++
 			}
 		}
+		// Revokes from earlier syncs whose message came in this one, then
+		// this sync's own; one whose message is still missing waits.
+		c.applyPendingRevokes(ctx, chatJID, "")
 		for _, ch := range revokes {
 			c.applyRevoke(ctx, ch)
 		}
@@ -650,11 +658,14 @@ func contextInfoOf(msg *waProto.Message) *waProto.ContextInfo {
 
 // quotedSnippet summarises the copy of the quoted message that a reply
 // carries: its text or caption, with a media marker for image, video, audio,
-// document and sticker messages (see store.QuoteSnippet).
+// document and sticker messages (see store.QuoteSnippet). The copy is
+// unwrapped first, as whatsmeow unwraps live messages, so a quoted view-once
+// image or document with caption keeps its marker.
 func quotedSnippet(quoted *waProto.Message) string {
 	if quoted == nil {
 		return ""
 	}
+	quoted = (&events.Message{RawMessage: quoted}).UnwrapRaw().Message
 	mediaType, filename := "", ""
 	switch {
 	case quoted.GetImageMessage() != nil:
@@ -684,6 +695,25 @@ func (c *Client) quotedSenderUser(participant string) string {
 		return ""
 	}
 	return strings.Split(c.store.ResolveLIDToJID(jid.ToNonAD().String()), "@")[0]
+}
+
+// isOwnParticipant reports whether the author of a quoted message is our own
+// account: participant names our phone number or our LID, or resolvedUser
+// (its LID-resolved user part) is our phone number. A reply to one of our
+// own messages that is not cached is then still shown as "from Me".
+func (c *Client) isOwnParticipant(participant, resolvedUser string) bool {
+	own := c.ownUser()
+	if participant == "" || own == "" {
+		return false
+	}
+	if resolvedUser == own {
+		return true
+	}
+	jid, err := types.ParseJID(participant)
+	if err != nil || jid.User == "" {
+		return false
+	}
+	return jid.User == own || (c.wa.Store.LID.User != "" && jid.User == c.wa.Store.LID.User)
 }
 
 // extractMediaInfo pulls out the storable media fields from a Message.

@@ -13,6 +13,7 @@ import (
 	"go.mau.fi/whatsmeow/types"
 
 	"github.com/sealjay/mcp-whatsapp/internal/ratelimit"
+	"github.com/sealjay/mcp-whatsapp/internal/store"
 )
 
 // MarkRead marks messageIDs as read for the given chat. senderJID is the
@@ -170,7 +171,26 @@ func (c *Client) EditMessage(ctx context.Context, chatJID, messageID, newBody st
 	if _, err := c.wa.SendMessage(ctx, chat, edit); err != nil {
 		return fmt.Errorf("send edit: %w", err)
 	}
+	c.applyEdit(ctx, c.ownChange(chat, messageID), newBody)
 	return nil
+}
+
+// ownChange builds the MessageChange for an edit or revoke this daemon sent
+// itself. whatsmeow does not echo our own sends back as events, so the
+// cached row is updated from here, under the same author check as an edit or
+// revoke from one of our other devices.
+func (c *Client) ownChange(chat types.JID, messageID string) store.MessageChange {
+	chatJID := chat.ToNonAD().String()
+	if chat.Server != types.GroupServer {
+		chatJID = c.store.ResolveLIDToJID(chatJID)
+	}
+	return store.MessageChange{
+		ChatJID:      chatJID,
+		ID:           messageID,
+		ActorSenders: []string{c.ownUser()},
+		ActorFromMe:  true,
+		At:           time.Now(),
+	}
 }
 
 // DeleteMessage revokes a message for everyone. senderJID is required only
@@ -196,6 +216,9 @@ func (c *Client) DeleteMessage(ctx context.Context, chatJID, messageID, senderJI
 	if _, err := c.wa.SendMessage(ctx, chat, revoke); err != nil {
 		return fmt.Errorf("send revoke: %w", err)
 	}
+	// Only our own messages are marked in the cache; an admin delete of
+	// someone else's message is not honoured there (see changeAllowed).
+	c.applyRevoke(ctx, c.ownChange(chat, messageID))
 	return nil
 }
 

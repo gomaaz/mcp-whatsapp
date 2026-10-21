@@ -528,3 +528,101 @@ func TestRevokedOriginal_HidesQuotedCopy(t *testing.T) {
 		check("after re-delivery")
 	}
 }
+
+// TestApplyPendingRevokes: a revoke stored before its message is applied
+// once the message is cached, with the usual author check. A revoke whose
+// message is still missing stays pending; one that was applied or refused
+// leaves the table.
+func TestApplyPendingRevokes(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	for _, ch := range []MessageChange{
+		{ChatJID: changeDM, ID: "p1", ActorSenders: []string{"447700000001"}, At: changeAt},
+		{ChatJID: changeDM, ID: "p2", ActorSenders: []string{"447700000099"}, At: changeAt},
+		{ChatJID: changeDM, ID: "p3", ActorSenders: []string{"447700000001"}, At: changeAt},
+	} {
+		if err := s.AddPendingRevoke(ctx, ch); err != nil {
+			t.Fatalf("AddPendingRevoke %s: %v", ch.ID, err)
+		}
+	}
+	// A second revoke of p1 keeps the first time.
+	if err := s.AddPendingRevoke(ctx, MessageChange{ChatJID: changeDM, ID: "p1", ActorSenders: []string{"447700000001"}, At: changeAt.Add(time.Hour)}); err != nil {
+		t.Fatalf("AddPendingRevoke again: %v", err)
+	}
+
+	storeChangeTarget(t, s, Message{ID: "p1", ChatJID: changeDM, Sender: "447700000001", Content: "gelöscht"})
+	storeChangeTarget(t, s, Message{ID: "p2", ChatJID: changeDM, Sender: "447700000001", Content: "nicht von p2s Absender gelöscht"})
+
+	// Only p1 when asked for p1.
+	applied, err := s.ApplyPendingRevokes(ctx, changeDM, "p1", false)
+	if err != nil || len(applied) != 1 || applied[0].ID != "p1" {
+		t.Fatalf("ApplyPendingRevokes(p1) = %+v, %v", applied, err)
+	}
+	if r := readChangeRow(t, s, changeDM, "p1"); r.content != "" || !r.revoked.Valid || !r.revoked.Time.Equal(changeAt) {
+		t.Errorf("p1 = %+v, want blanked with revoked_at %v", r, changeAt)
+	}
+	if r := readChangeRow(t, s, changeDM, "p2"); r.revoked.Valid {
+		t.Errorf("p2 revoked before its pending revoke was applied: %+v", r)
+	}
+
+	// The whole chat: p2 is refused (other sender), p3 still missing.
+	applied, err = s.ApplyPendingRevokes(ctx, changeDM, "", false)
+	if err != nil || len(applied) != 0 {
+		t.Fatalf("ApplyPendingRevokes(chat) = %+v, %v; want nothing applied", applied, err)
+	}
+	if r := readChangeRow(t, s, changeDM, "p2"); r.revoked.Valid || r.content == "" {
+		t.Errorf("p2 = %+v, want untouched (revoke from another sender)", r)
+	}
+	var left []string
+	rows, err := s.db.Query("SELECT message_id FROM pending_revokes ORDER BY message_id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		left = append(left, id)
+	}
+	if strings.Join(left, ",") != "p3" {
+		t.Errorf("pending left = %v, want only p3", left)
+	}
+}
+
+// TestGetChat_PreviewMarksDeletedAndEdited: the last-message preview of
+// list_chats/get_chat carries the same markers as a list_messages line.
+func TestGetChat_PreviewMarksDeletedAndEdited(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	late := time.Date(2030, 1, 1, 9, 0, 0, 0, time.UTC)
+	storeChangeTarget(t, s, Message{ID: "pv", ChatJID: changeDM, Sender: "447700000001", Content: "Preis 500 Euro", Timestamp: late})
+
+	preview := func() string {
+		t.Helper()
+		c, err := s.GetChat(ctx, changeDM, true)
+		if err != nil || c == nil {
+			t.Fatalf("GetChat = %v, %v", c, err)
+		}
+		return c.LastMessage
+	}
+	ch := MessageChange{ChatJID: changeDM, ID: "pv", ActorSenders: []string{"447700000001"}, At: late.Add(time.Minute)}
+	if _, err := s.ApplyEdit(ctx, ch, "Preis 450 Euro"); err != nil {
+		t.Fatal(err)
+	}
+	if got := preview(); got != "[edited] Preis 450 Euro" {
+		t.Errorf("edited preview = %q", got)
+	}
+	ch.At = late.Add(2 * time.Minute)
+	if _, err := s.ApplyRevoke(ctx, ch, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := preview(); got != "[deleted by sender] Preis 450 Euro" {
+		t.Errorf("revoked preview with kept text = %q", got)
+	}
+	chats, err := s.ListChats(ctx, "447700000001", 10, 0, true, "")
+	if err != nil || len(chats) == 0 || chats[0].LastMessage != "[deleted by sender] Preis 450 Euro" {
+		t.Errorf("ListChats preview = %+v, %v", chats, err)
+	}
+}

@@ -82,14 +82,38 @@ func (c *Client) applyEdit(ctx context.Context, ch store.MessageChange, text str
 
 // applyRevoke stores a delete-for-everyone and logs the outcome. Unless the
 // client runs with KeepRevoked, the message's text and media keys are
-// blanked and a file download_media already cached for it is deleted.
+// blanked and a file download_media already cached for it is deleted. A
+// revoke whose message is not cached yet is kept as pending and applied when
+// the message arrives (see applyPendingRevokes).
 func (c *Client) applyRevoke(ctx context.Context, ch store.MessageChange) store.ChangeResult {
 	res, err := c.store.ApplyRevoke(ctx, ch, c.keepRevoked)
 	c.logChange("revoke", ch, res, err)
-	if err == nil && res == store.ChangeApplied && !c.keepRevoked {
+	switch {
+	case err != nil:
+	case res == store.ChangeApplied && !c.keepRevoked:
 		c.removeMessageMedia(ch.ChatJID, ch.ID)
+	case res == store.ChangeTargetMissing:
+		if err := c.store.AddPendingRevoke(ctx, ch); err != nil {
+			c.log.Warnf("Failed to keep revoke of %s in %s for later: %v", c.redactor.MsgID(ch.ID), c.redactor.JID(ch.ChatJID), err)
+		}
 	}
 	return res
+}
+
+// applyPendingRevokes applies revokes that arrived before the message they
+// delete, once that message is stored: the one for messageID, or every
+// pending revoke of the chat when messageID is "".
+func (c *Client) applyPendingRevokes(ctx context.Context, chatJID, messageID string) {
+	applied, err := c.store.ApplyPendingRevokes(ctx, chatJID, messageID, c.keepRevoked)
+	if err != nil {
+		c.log.Warnf("Failed to apply pending revokes in %s: %v", c.redactor.JID(chatJID), err)
+	}
+	for _, ch := range applied {
+		c.log.Infof("Applied pending revoke of %s in %s", c.redactor.MsgID(ch.ID), c.redactor.JID(ch.ChatJID))
+		if !c.keepRevoked {
+			c.removeMessageMedia(ch.ChatJID, ch.ID)
+		}
+	}
 }
 
 func (c *Client) logChange(kind string, ch store.MessageChange, res store.ChangeResult, err error) {

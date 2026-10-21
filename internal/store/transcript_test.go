@@ -60,7 +60,7 @@ func TestSetTranscript_GetAudioInfoAndRedelivery(t *testing.T) {
 	ctx := context.Background()
 	storeVoiceNote(t, s, "v2", 12, true)
 
-	ok, err := s.SetTranscript(ctx, "v2", voiceChat, "Bitte um Rückruf")
+	ok, err := s.SetTranscript(ctx, "v2", voiceChat, "Bitte um Rückruf", false)
 	if err != nil || !ok {
 		t.Fatalf("SetTranscript = %v, %v", ok, err)
 	}
@@ -97,7 +97,7 @@ func TestSetTranscript_SkipsNonAudioAndRevoked(t *testing.T) {
 	}, nil, nil, nil, 0); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := s.SetTranscript(ctx, "t1", voiceChat, "x"); err != nil || ok {
+	if ok, err := s.SetTranscript(ctx, "t1", voiceChat, "x", false); err != nil || ok {
 		t.Fatalf("SetTranscript on text = %v, %v; want false", ok, err)
 	}
 
@@ -108,8 +108,13 @@ func TestSetTranscript_SkipsNonAudioAndRevoked(t *testing.T) {
 	}, true); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := s.SetTranscript(ctx, "v3", voiceChat, "x"); err != nil || ok {
+	if ok, err := s.SetTranscript(ctx, "v3", voiceChat, "x", false); err != nil || ok {
 		t.Fatalf("SetTranscript on revoked = %v, %v; want false", ok, err)
+	}
+	// With -keep-revoked the text of a deleted message is kept, so its
+	// transcript may be cached too.
+	if ok, err := s.SetTranscript(ctx, "v3", voiceChat, "x", true); err != nil || !ok {
+		t.Fatalf("SetTranscript on revoked with keepRevoked = %v, %v; want true", ok, err)
 	}
 }
 
@@ -118,7 +123,7 @@ func TestApplyRevoke_BlanksTranscriptUnlessKept(t *testing.T) {
 		s := openTestStore(t)
 		ctx := context.Background()
 		storeVoiceNote(t, s, "v4", 5, true)
-		if _, err := s.SetTranscript(ctx, "v4", voiceChat, "geheim"); err != nil {
+		if _, err := s.SetTranscript(ctx, "v4", voiceChat, "geheim", false); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := s.ApplyRevoke(ctx, MessageChange{
@@ -145,7 +150,7 @@ func TestListMessages_QueryMatchesTranscript(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	storeVoiceNote(t, s, "v5", 30, true)
-	if _, err := s.SetTranscript(ctx, "v5", voiceChat, "Termin am Donnerstag"); err != nil {
+	if _, err := s.SetTranscript(ctx, "v5", voiceChat, "Termin am Donnerstag", false); err != nil {
 		t.Fatal(err)
 	}
 	msgs, err := s.ListMessages(ctx, ListMessagesParams{Query: "DONNERSTAG"})

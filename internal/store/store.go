@@ -59,13 +59,15 @@ type Message struct {
 	// ContextInfo stanza ID), empty when it is not a reply.
 	QuotedMessageID string `json:"quoted_message_id,omitempty"`
 	// QuotedSender is the bare phone/user part of the quoted message's
-	// author, LID-resolved when the mapping was known.
+	// author, LID-resolved when the mapping was known, or QuotedSenderMe
+	// for our own messages.
 	QuotedSender string `json:"quoted_sender,omitempty"`
 	// QuotedText is a short snippet of the quoted message (see QuoteSnippet).
 	// Reads prefer the cached original over the snippet embedded in the reply.
 	QuotedText string `json:"quoted_text,omitempty"`
-	// QuotedFromMe is set on read when the cached original is our own
-	// message. It is not stored.
+	// QuotedFromMe is set on read when the quoted original is our own
+	// message: the cached original says so, or, when it is not cached, the
+	// stored quoted_sender is QuotedSenderMe.
 	QuotedFromMe bool `json:"quoted_from_me,omitempty"`
 	// IsForwarded marks a message WhatsApp flagged as forwarded.
 	IsForwarded bool `json:"is_forwarded,omitempty"`
@@ -306,6 +308,12 @@ func (s *Store) StoreMessage(ctx context.Context, m Message, mediaKey, fileSHA25
 	return tx.Commit()
 }
 
+// QuotedSenderMe is stored as quoted_sender when the quoted message is one of
+// our own, so a reply to it reads "from Me" even when the original is not
+// cached. It is the same "me" that legacy rows carry as the sender of our
+// own messages (see resolveSenderPhone).
+const QuotedSenderMe = "me"
+
 // UndecryptablePlaceholder is the text stored for a message this device could
 // not decrypt. WhatsApp asks the sender's phone to send it again; when the
 // retry decrypts, the real message replaces the placeholder row.
@@ -545,6 +553,9 @@ func migrateSchema(db *sql.DB) error {
 		}
 	}
 	if err := createReactionsTable(db); err != nil {
+		return err
+	}
+	if err := createPendingRevokesTable(db); err != nil {
 		return err
 	}
 	return normalizeTimestamps(db)

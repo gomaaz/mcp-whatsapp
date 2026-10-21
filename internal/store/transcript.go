@@ -56,15 +56,17 @@ func (s *Store) GetAudioInfo(ctx context.Context, id, chatJID string) (AudioInfo
 	return info, nil
 }
 
-// SetTranscript caches the transcript of an audio message. A message the
+// SetTranscript caches the transcript of an audio message. Unless
+// keepRevoked is set (the daemon runs with -keep-revoked), a message the
 // sender deleted for everyone is left alone, so a transcription that was
 // running while the revoke arrived cannot write the text back. It reports
 // whether a row was updated.
-func (s *Store) SetTranscript(ctx context.Context, id, chatJID, transcript string) (bool, error) {
-	res, err := s.db.ExecContext(ctx,
-		"UPDATE messages SET transcript = ? WHERE id = ? AND chat_jid = ? AND media_type = 'audio' AND revoked_at IS NULL",
-		nullableString(transcript), id, chatJID,
-	)
+func (s *Store) SetTranscript(ctx context.Context, id, chatJID, transcript string, keepRevoked bool) (bool, error) {
+	q := "UPDATE messages SET transcript = ? WHERE id = ? AND chat_jid = ? AND media_type = 'audio'"
+	if !keepRevoked {
+		q += " AND revoked_at IS NULL"
+	}
+	res, err := s.db.ExecContext(ctx, q, nullableString(transcript), id, chatJID)
 	if err != nil {
 		return false, fmt.Errorf("store transcript: %w", err)
 	}

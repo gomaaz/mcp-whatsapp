@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/sealjay/mcp-whatsapp/internal/client"
 	"github.com/sealjay/mcp-whatsapp/internal/store"
 )
 
@@ -278,7 +280,7 @@ func (s *Server) registerIsOnWhatsApp() {
 
 func (s *Server) registerGetStatus() {
 	tool := mcp.NewTool("get_status",
-		mcp.WithDescription("Report whether the embedded WhatsApp bridge is connected and which account it is paired with. Read-only; no side effects. Call this first when other tools fail with auth or connection errors. Returns a JSON object `{connected, paired, own_jid?, own_phone?, hint?}` — `hint` includes the URL of the local pairing UI when not yet paired."),
+		mcp.WithDescription("Report whether the embedded WhatsApp bridge is connected and which account it is paired with. Read-only; no side effects. Call this first when other tools fail with auth or connection errors. Returns a JSON object `{connected, paired, own_jid?, own_phone?, hint?, connected_since?, last_disconnect_at?, logged_out_at?, logout_reason?, temporary_ban_until?, temporary_ban_reason?, last_message_received_at?}` — `hint` includes the URL of the local pairing UI when not yet paired; the timestamps are RFC 3339 UTC, tracked locally since the server started, and omitted until the event has happened (logged_out_at means WhatsApp ended the session and the device must be paired again)."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -296,8 +298,32 @@ func (s *Server) registerGetStatus() {
 			status["paired"] = false
 			status["hint"] = "Not paired. Open /pair on this server in a browser to scan QR (default: http://127.0.0.1:8765/pair)."
 		}
+		addHealthFields(status, s.client.Health())
 		return resultJSON(status)
 	})
+}
+
+// addHealthFields copies the client's connection bookkeeping into a get_status
+// payload. Times are RFC 3339 in UTC; zero times and empty reasons are left
+// out so a fresh process reports only what it has actually seen.
+func addHealthFields(status map[string]any, h client.Health) {
+	putTime := func(key string, t time.Time) {
+		if !t.IsZero() {
+			status[key] = t.UTC().Format(time.RFC3339)
+		}
+	}
+	putString := func(key, v string) {
+		if v != "" {
+			status[key] = v
+		}
+	}
+	putTime("connected_since", h.ConnectedSince)
+	putTime("last_disconnect_at", h.LastDisconnectAt)
+	putTime("logged_out_at", h.LoggedOutAt)
+	putString("logout_reason", h.LogoutReason)
+	putTime("temporary_ban_until", h.TemporaryBanUntil)
+	putString("temporary_ban_reason", h.TemporaryBanReason)
+	putTime("last_message_received_at", h.LastMessageReceivedAt)
 }
 
 // -- pairing_status ---------------------------------------------------------

@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/sealjay/mcp-whatsapp/internal/client"
 )
 
 // fakePairCache is a minimal pairingCache for exercising pairing_status
@@ -128,5 +131,46 @@ func TestListMessages_RejectsUnknownMediaType(t *testing.T) {
 	text, ok := mcp.AsTextContent(res.Content[0])
 	if !ok || !strings.Contains(text.Text, "invalid 'media_type'") {
 		t.Fatalf("unexpected error content: %+v", res.Content)
+	}
+}
+
+func TestAddHealthFields_OmitsZeroValues(t *testing.T) {
+	status := map[string]any{"connected": false}
+	addHealthFields(status, client.Health{})
+	if len(status) != 1 {
+		t.Fatalf("zero Health added fields: %v", status)
+	}
+}
+
+func TestAddHealthFields_FormatsRFC3339UTC(t *testing.T) {
+	berlin := time.FixedZone("CEST", 2*60*60)
+	h := client.Health{
+		ConnectedSince:        time.Date(2026, 10, 21, 10, 0, 0, 0, berlin),
+		LastDisconnectAt:      time.Date(2026, 10, 21, 9, 59, 0, 0, time.UTC),
+		LoggedOutAt:           time.Date(2026, 10, 1, 7, 0, 0, 0, time.UTC),
+		LogoutReason:          "401: logged out from another device",
+		TemporaryBanUntil:     time.Date(2026, 10, 2, 7, 0, 0, 0, time.UTC),
+		TemporaryBanReason:    "102: too many people blocked you",
+		LastMessageReceivedAt: time.Date(2026, 10, 21, 10, 5, 30, 0, time.UTC),
+	}
+	status := map[string]any{}
+	addHealthFields(status, h)
+
+	want := map[string]string{
+		"connected_since":          "2026-10-21T08:00:00Z",
+		"last_disconnect_at":       "2026-10-21T09:59:00Z",
+		"logged_out_at":            "2026-10-01T07:00:00Z",
+		"logout_reason":            "401: logged out from another device",
+		"temporary_ban_until":      "2026-10-02T07:00:00Z",
+		"temporary_ban_reason":     "102: too many people blocked you",
+		"last_message_received_at": "2026-10-21T10:05:30Z",
+	}
+	if len(status) != len(want) {
+		t.Errorf("got %d fields, want %d: %v", len(status), len(want), status)
+	}
+	for k, v := range want {
+		if status[k] != v {
+			t.Errorf("%s = %v, want %q", k, status[k], v)
+		}
 	}
 }

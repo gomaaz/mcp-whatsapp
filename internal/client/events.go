@@ -24,29 +24,41 @@ func (c *Client) StartEventHandler() {
 	if c.handlerInstalled {
 		return
 	}
-	c.handlerID = c.wa.AddEventHandler(func(evt interface{}) {
-		switch v := evt.(type) {
-		case *events.Message:
-			c.handleMessage(v)
-		case *events.HistorySync:
-			c.handleHistorySync(v)
-		case *events.Connected:
-			c.log.Infof("Connected to WhatsApp")
-		case *events.LoggedOut:
-			c.log.Warnf("Device logged out, please scan QR code to log in again")
-		case *events.OfflineSyncPreview:
-			c.log.Infof("Offline sync starting - %d messages, %d receipts pending", v.Messages, v.Receipts)
-		case *events.OfflineSyncCompleted:
-			c.log.Infof("Offline sync completed - %d messages synced", v.Count)
-		case *events.Receipt:
-			c.log.Debugf("Receipt for %d messages: %s", len(v.MessageIDs), v.Type)
-		case *events.UndecryptableMessage:
-			c.log.Warnf("Undecryptable message from %s", v.Info.Sender)
-		default:
-			c.log.Debugf("Unhandled event type: %T", v)
-		}
-	})
+	c.handlerID = c.wa.AddEventHandler(c.handleEvent)
 	c.handlerInstalled = true
+}
+
+// handleEvent dispatches one whatsmeow event. Connection events also update
+// the local health bookkeeping reported by get_status.
+func (c *Client) handleEvent(evt interface{}) {
+	switch v := evt.(type) {
+	case *events.Message:
+		c.handleMessage(v)
+	case *events.HistorySync:
+		c.handleHistorySync(v)
+	case *events.Connected:
+		c.health.connected(time.Now())
+		c.log.Infof("Connected to WhatsApp")
+	case *events.Disconnected:
+		c.health.disconnected(time.Now())
+		c.log.Warnf("Disconnected from WhatsApp, reconnecting")
+	case *events.LoggedOut:
+		c.health.loggedOut(time.Now(), v)
+		c.log.Warnf("Device logged out (%s), please scan QR code to log in again", v.Reason)
+	case *events.TemporaryBan:
+		c.health.temporaryBan(time.Now(), v)
+		c.log.Warnf("%s", v)
+	case *events.OfflineSyncPreview:
+		c.log.Infof("Offline sync starting - %d messages, %d receipts pending", v.Messages, v.Receipts)
+	case *events.OfflineSyncCompleted:
+		c.log.Infof("Offline sync completed - %d messages synced", v.Count)
+	case *events.Receipt:
+		c.log.Debugf("Receipt for %d messages: %s", len(v.MessageIDs), v.Type)
+	case *events.UndecryptableMessage:
+		c.log.Warnf("Undecryptable message from %s", v.Info.Sender)
+	default:
+		c.log.Debugf("Unhandled event type: %T", v)
+	}
 }
 
 // normalizedMessage holds the result of normalizeIncomingMessage: the
@@ -135,6 +147,10 @@ func (c *Client) normalizeIncomingMessage(
 
 // handleMessage persists an incoming message and its chat metadata.
 func (c *Client) handleMessage(msg *events.Message) {
+	if !msg.Info.IsFromMe {
+		c.health.messageReceived(time.Now())
+	}
+
 	nm := c.normalizeIncomingMessage(
 		msg.Info.Chat.String(),
 		msg.Info.Sender.String(),

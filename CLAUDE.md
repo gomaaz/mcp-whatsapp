@@ -5,11 +5,12 @@ Single Go binary that runs as an HTTP MCP daemon (default `127.0.0.1:8765`) wrap
 ## Structure
 
 ```
-cmd/whatsapp-mcp/       login, serve, smoke subcommands
+cmd/whatsapp-mcp/       login, serve, smoke, prune subcommands
 internal/client/        whatsmeow client wrapper (send, download, events, history, features)
 internal/daemon/        HTTP server, pairing state machine, /pair endpoint
 internal/mcp/           mark3labs/mcp-go v1 server + tool registrations
 internal/media/         ogg analysis + ffmpeg and whisper.cpp shell-out
+internal/mediacache/    downloaded-media cache layout, pruning, per-message removal
 internal/security/      path allowlisting, filename sanitisation, log redaction
 internal/store/         SQLite cache + queries + LID resolution + formatters
 scripts/mdtest-parity.sh  whatsmeow API drift canary
@@ -22,6 +23,7 @@ Data lives under `./store/` (override with `-store DIR`): `messages.db`, `whatsa
 - `login` — pair the device via QR (or `-phone` for a pairing code), write session to `store/whatsapp.db`.
 - `serve` — HTTP daemon on `127.0.0.1:<port>`; tracks events + serves MCP at `/mcp`; pairing UI at `/pair`. Holds `store/.lock` while running and is mutually exclusive with any other `serve` instance using the same store directory.
 - `smoke` — boot-test without connecting to WhatsApp.
+- `prune -media-older-than 30d [-dry-run]` — delete cached media files; takes `store/.lock`, so it refuses to run next to `serve` (a dry run only reads and is allowed).
 
 ## Testing
 
@@ -59,6 +61,7 @@ Tool surface is 44 tools, registered from `internal/mcp/tools.go` + `tools_group
 8. **Polls + contact cards + view-once flag** — `internal/client/features_media.go` (poll send / vote / tally + contact-card send paths) plus `internal/client/vcard.go` (vCard 3.0 synthesis when no override supplied) and the `ViewOnce` option plumbed through `SendMediaOptions` in `internal/client/send.go`. `SendPoll` now uses `wa.BuildPollCreation` so the required `MessageSecret` is attached (without it, votes cannot be decrypted — this was silently broken before). Vote ingest + tally live in `internal/client/events.go::handlePollVote` and `internal/store/poll.go` (the new `poll_votes` table + `messages.poll_options_json` column).
 9. **Message types and reactions (receive side)** — `internal/client/placeholders.go` turns locations, live locations, contact cards (vCard FN/TEL parsed by `parseVCard` in `vcard.go`) and contact lists into readable `[location] …` / `[contact] …` text, and stores a `store.UndecryptablePlaceholder` row for `events.UndecryptableMessage` (chat row first, `INSERT OR IGNORE`; a decrypted retry with the same ID replaces it, and `handleMessage` deletes a leftover placeholder). Stickers are media type `sticker` (downloaded with image keys), video notes (`PtvMessage`) `video`. Reactions (`internal/client/reactions.go`, live and history `WebMessageInfo.Reactions`) go to the `reactions` table (`internal/store/reactions.go`, created in `migrateSchema`; newest per sender wins, empty emoji = removed), never to `messages`; `ListMessages` / `GetMessageContext` attach them and `FormatMessage` prints `[reactions: …]`. `ListUnanswered` counts an own reaction as a reply up to the reacted-to message.
 10. **Presence / privacy / status message** — `internal/client/features_privacy.go`. `SendPresence` (own availability), `GetPrivacySettings` / `SetPrivacySetting` with strict enum validation, `SetStatusMessage` for the "About" text.
+11. **Media retention** — `internal/mediacache/mediacache.go` owns the cache layout `<store>/<chat_jid>/<hex(message_id)>/<file>` (`MessageDir`, also used by `Download`), `Prune` and `RemoveMessage`. Deletion only follows that layout: chat dirs must be real directories containing `@`, message dirs lowercase hex, only regular files go, every directory must resolve inside the store (`security.ResolveWithin`), and the media root is skipped. `Client.PruneMedia` (`internal/client/retention.go`) holds `mediaMu` exclusively; `Download` holds it shared and refreshes a cache hit's mtime, so retention counts from last use. `serve -media-retention` runs it at startup and every 24h; the `prune` subcommand takes the store lock instead. A revoke without `-keep-revoked` deletes the message's cached file (`applyRevoke`), and `Download` refuses revoked messages.
 
 ## Versioning
 

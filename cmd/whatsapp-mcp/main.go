@@ -4,6 +4,7 @@
 //	login  — one-shot interactive QR pairing (writes session to store/whatsapp.db)
 //	serve  — long-running HTTP daemon: serves MCP at /mcp and pairing UI at /pair
 //	smoke  — non-interactive boot-check used by CI (no network, no listener)
+//	prune  — delete downloaded media files older than a given age
 package main
 
 import (
@@ -29,6 +30,8 @@ Commands:
   login   Pair this device with your WhatsApp account via QR code (terminal)
   serve   Run the always-on HTTP MCP daemon (tracks events + serves MCP on 127.0.0.1:8765)
   smoke   Non-interactive boot check (CI): opens store + builds MCP server without connecting
+  prune   Delete downloaded media files from the store (messages and transcripts stay);
+          refuses to run while serve holds the store lock
   help    Show this help
 
 Global flags (before the command):
@@ -46,6 +49,13 @@ Global flags (before the command):
 Serve-specific flags (after 'serve'):
   -addr host:port   HTTP bind address (default: 127.0.0.1:8765, env WHATSAPP_MCP_ADDR)
   -allow-remote     Allow binding to a non-loopback address (dangerous)
+  -media-retention D
+                    Delete downloaded media unused for D (e.g. 30d, 720h) at startup
+                    and every 24h (default 0 = off)
+
+Prune-specific flags (after 'prune'):
+  -media-older-than D   Delete downloaded media unused for D, e.g. 30d or 720h (required)
+  -dry-run              Only report what would be deleted
 `
 
 func main() {
@@ -106,6 +116,8 @@ func main() {
 		code = runServe(storeDir, redactor, readOnly, keepRevoked, rest)
 	case "smoke":
 		code = runSmoke(storeDir, redactor, rest)
+	case "prune":
+		code = runPrune(storeDir, rest)
 	case "help", "-h", "--help":
 		fmt.Fprint(os.Stdout, usage)
 		code = 0

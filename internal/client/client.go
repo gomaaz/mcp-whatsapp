@@ -66,6 +66,10 @@ type Client struct {
 	// transcribeMu runs one transcription at a time: whisper.cpp already
 	// uses several cores, parallel runs only slow each other down.
 	transcribeMu sync.Mutex
+	// mediaMu guards the downloaded-media cache: Download holds it shared
+	// while it creates, writes or hands out a cached file, PruneMedia and
+	// the revoke cleanup hold it exclusively while they delete.
+	mediaMu sync.RWMutex
 }
 
 // New constructs a Client. It sets the latest WhatsApp version best-effort,

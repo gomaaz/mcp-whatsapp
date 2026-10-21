@@ -245,3 +245,44 @@ func TestSafeFilename(t *testing.T) {
 		}
 	})
 }
+
+func TestResolveWithin(t *testing.T) {
+	root := t.TempDir()
+	inside := filepath.Join(root, "chat@s.whatsapp.net")
+	if err := os.MkdirAll(inside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveWithin(inside, root); err != nil {
+		t.Errorf("directory inside root rejected: %v", err)
+	}
+	if _, err := ResolveWithin(root, root); err != nil {
+		t.Errorf("root itself rejected: %v", err)
+	}
+	if _, err := ResolveWithin(t.TempDir(), root); err == nil {
+		t.Error("directory outside root accepted")
+	}
+	if _, err := ResolveWithin(filepath.Join(root, "missing"), root); err == nil {
+		t.Error("missing path accepted")
+	}
+	// A sibling whose name starts with the root's name is not inside it.
+	sibling := root + "-other"
+	if err := os.MkdirAll(sibling, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(sibling) })
+	if _, err := ResolveWithin(sibling, root); err == nil {
+		t.Error("prefix sibling accepted")
+	}
+}
+
+func TestResolveWithin_SymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(root, "escape@s.whatsapp.net")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	if _, err := ResolveWithin(link, root); err == nil {
+		t.Fatal("symlink pointing outside the root accepted")
+	}
+}

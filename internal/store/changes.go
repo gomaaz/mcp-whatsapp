@@ -94,7 +94,8 @@ func (s *Store) ApplyEdit(ctx context.Context, ch MessageChange, text string) (C
 // revoked_at. Unless keepContent is set, it also blanks the text and the
 // media download fields (url, direct path, key, hashes) and any cached
 // transcript, so neither the text nor the file of a message its author
-// deleted can be read back. The copy of its text that replies to it carried
+// deleted can be read back (the client deletes a file download_media cached
+// before the revoke, and Download refuses revoked messages). The copy of its text that replies to it carried
 // (quoted_text) is cleared as well; the read path shows such quotes as
 // "[deleted by sender]" from then on, also for replies stored again later.
 // The media type and file name stay, so the line still shows what kind of
@@ -130,6 +131,22 @@ func (s *Store) ApplyRevoke(ctx context.Context, ch MessageChange, keepContent b
 		return 0, fmt.Errorf("apply revoke: %w", err)
 	}
 	return ChangeApplied, nil
+}
+
+// MessageRevoked reports whether the sender deleted a cached message for
+// everyone. A message that is not cached is not revoked.
+func (s *Store) MessageRevoked(ctx context.Context, id, chatJID string) (bool, error) {
+	var revoked bool
+	err := s.db.QueryRowContext(ctx,
+		"SELECT revoked_at IS NOT NULL FROM messages WHERE id = ? AND chat_jid = ?", id, chatJID,
+	).Scan(&revoked)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read revoked state: %w", err)
+	}
+	return revoked, nil
 }
 
 // changeTarget looks up the target row of ch and checks that the change may

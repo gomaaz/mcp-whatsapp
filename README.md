@@ -79,6 +79,17 @@ Restart the client. The daemon outlives client restarts.
 
 Paths outside the root, including symlinks that resolve outside it, are rejected. Anything inside the root is readable and writable by the tools, so keep secrets out.
 
+### Media retention
+
+Downloaded files stay in the cache until something deletes them. Two ways to clean up, both deleting only cached media files and the folders left empty:
+
+| How | What it does |
+|---|---|
+| `whatsapp-mcp [-store DIR] prune -media-older-than 30d` | One-off cleanup. `-dry-run` only reports what would go. Refuses to run while `serve` holds the store lock (a dry run still works then); stop `serve` first or use the flag below. |
+| `whatsapp-mcp serve -media-retention 30d` | Same cleanup at startup and then every 24 hours, inside the daemon. Default `0` = off. |
+
+Durations take whole days (`30d`) or Go durations (`720h`); the minimum is `1h`. A file's age counts from when `download_media` last fetched or handed it out. Message rows and cached transcripts stay, and `download_media` downloads a pruned file again when asked, as long as WhatsApp still has it on its servers; older media may be gone there for good. `messages.db`, `whatsapp.db`, `.lock`, the media root and anything not laid out as `<chat_jid>/<hex(message_id)>/<file>` are never touched, and symlinks or junctions are not followed. On Windows a store reached through a junction is left alone entirely, and a media root that contains the store makes pruning refuse to run.
+
 **Sandboxed clients (Claude Cowork and similar)** cannot read the daemon's cache. Point `WHATSAPP_MCP_MEDIA_ROOT` at a directory the sandbox can read and give the client this instruction:
 
 > When calling the WhatsApp MCP's `download_media`, always pass `output_path` set to a path under your shared workspace. Without it the decrypted file lands only in the daemon's local cache, which is outside your sandbox and unreadable. `output_path` must live under `WHATSAPP_MCP_MEDIA_ROOT` on the daemon side; the basename is yours to pick.
@@ -90,7 +101,8 @@ Paths outside the root, including symlinks that resolve outside it, are rejected
 - `WHATSAPP_MCP_MEDIA_ROOT`: the file allowlist root above.
 - `WHATSAPP_MCP_DEBUG=1` or `-debug`: verbose logs (see [Debug logging](#debug-logging)).
 - `-read-only` (global, before the command) or `WHATSAPP_MCP_READ_ONLY=1`: register only the 17 tools without outbound effect (`search_contacts`, `list_messages`, `list_unanswered`, `list_chats`, `get_chat`, `get_message_context`, `download_media`, `transcribe_media`, `request_sync`, `get_status`, `pairing_status`, `list_groups`, `get_group_info`, `get_blocklist`, `get_privacy_settings`, `get_poll_results`, `is_on_whatsapp`). Nothing that sends, edits, deletes, sends read receipts or changes groups and privacy is reachable, whatever the client calls. `get_group_invite_link` is left out because it can reset the link. An explicit flag wins over the env var, e.g. `-read-only=false`.
-- `-keep-revoked` (global, before the command) or `WHATSAPP_MCP_KEEP_REVOKED=1`: keep the text of messages their sender deleted for everyone. By default the daemon blanks the stored text and media keys of such a message and shows it as `[deleted by sender]`; with this switch the line keeps the text after the marker. Either way `revoked_at` is recorded. An explicit flag wins over the env var.
+- `-media-retention 30d`: delete cached media not used for that long, at startup and every 24 hours (see [Media retention](#media-retention)). Default `0` = off.
+- `-keep-revoked` (global, before the command) or `WHATSAPP_MCP_KEEP_REVOKED=1`: keep the text of messages their sender deleted for everyone. By default the daemon blanks the stored text and media keys of such a message, deletes a file `download_media` already cached for it and shows it as `[deleted by sender]`; with this switch the line keeps the text after the marker. Either way `revoked_at` is recorded. An explicit flag wins over the env var.
 - `WHATSAPP_MCP_WHISPER_BIN` and `WHATSAPP_MCP_WHISPER_MODEL`: turn on `transcribe_media`. The first is the [whisper.cpp](https://github.com/ggml-org/whisper.cpp) CLI (`whisper-cli`, on Windows `whisper-cli.exe`), the second a ggml model file such as `ggml-base.bin`. Transcription runs on this machine; ffmpeg must be on `PATH`. Without both variables the tool answers with an error that names them.
 - `WHATSAPP_MCP_WHISPER_LANG`: spoken language passed to whisper.cpp, e.g. `de`; default `auto` (detect).
 - `WHATSAPP_MCP_WHISPER_TIMEOUT`: time limit for converting and transcribing one message, as a duration (`90s`, `5m`) or seconds; default `5m`.
@@ -123,11 +135,12 @@ Clients then send `Authorization: Bearer $TOKEN`. The container binds loopback b
 ## Architecture
 
 ```
-cmd/whatsapp-mcp/       login / serve / smoke subcommands
+cmd/whatsapp-mcp/       login / serve / smoke / prune subcommands
 internal/client/        whatsmeow client wrapper (send, download, events, history, features)
 internal/daemon/        HTTP server, pairing state machine, /pair endpoints
 internal/mcp/           mark3labs/mcp-go v1 server + tool registrations
 internal/media/         ogg parsing, waveform synthesis, ffmpeg and whisper.cpp shell-out
+internal/mediacache/    layout of the downloaded-media cache, pruning and per-message removal
 internal/security/      path allowlisting, filename sanitisation, log redaction
 internal/store/         SQLite cache, LID resolution, query layer
 ```

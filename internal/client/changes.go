@@ -82,10 +82,13 @@ func (c *Client) applyEdit(ctx context.Context, ch store.MessageChange, text str
 
 // applyRevoke stores a delete-for-everyone and logs the outcome. Unless the
 // client runs with KeepRevoked, the message's text and media keys are
-// blanked.
+// blanked and a file download_media already cached for it is deleted.
 func (c *Client) applyRevoke(ctx context.Context, ch store.MessageChange) store.ChangeResult {
 	res, err := c.store.ApplyRevoke(ctx, ch, c.keepRevoked)
 	c.logChange("revoke", ch, res, err)
+	if err == nil && res == store.ChangeApplied && !c.keepRevoked {
+		c.removeMessageMedia(ch.ChatJID, ch.ID)
+	}
 	return res
 }
 

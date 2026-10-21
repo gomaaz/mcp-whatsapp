@@ -22,13 +22,15 @@ import (
 
 func runServe(storeDir string, redactor *security.Redactor, readOnly, keepRevoked bool, args []string) int {
 	var (
-		addr        string
-		allowRemote bool
+		addr           string
+		allowRemote    bool
+		mediaRetention retentionFlag
 	)
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.StringVar(&addr, "addr", "", "HTTP bind address (default: 127.0.0.1:8765, env WHATSAPP_MCP_ADDR)")
 	fs.BoolVar(&allowRemote, "allow-remote", false, "allow binding to a non-loopback address")
+	fs.Var(&mediaRetention, "media-retention", "delete downloaded media not used for this long, at startup and every 24h, e.g. 30d (default 0 = off)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -66,11 +68,7 @@ func runServe(storeDir string, redactor *security.Redactor, readOnly, keepRevoke
 		fmt.Fprintf(os.Stderr, "resolve store dir: %v\n", err)
 		return 1
 	}
-	allowedMediaRoot := os.Getenv("WHATSAPP_MCP_MEDIA_ROOT")
-	if allowedMediaRoot == "" {
-		allowedMediaRoot = filepath.Join(absStore, "uploads")
-	}
-	allowedMediaRoot = filepath.Clean(allowedMediaRoot)
+	allowedMediaRoot := mediaRootFor(absStore)
 	if mkErr := os.MkdirAll(allowedMediaRoot, 0o755); mkErr != nil {
 		fmt.Fprintf(os.Stderr, "warn: could not create media root %q: %v\n", allowedMediaRoot, mkErr)
 	}
@@ -113,6 +111,26 @@ func runServe(storeDir string, redactor *security.Redactor, readOnly, keepRevoke
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "init client: %v\n", err)
 		return 1
+	}
+
+	if mediaRetention.d > 0 {
+		fmt.Fprintf(os.Stderr, "media retention: deleting downloaded media unused for %s, at startup and every %s\n", mediaRetention.d, retentionInterval)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			mediaRetentionLoop(ctx, retentionInterval, func() {
+				rep, err := c.PruneMedia(mediaRetention.d, false)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "warn: media retention: %v\n", err)
+				}
+				if rep.Files > 0 || rep.MessageDirs > 0 {
+					fmt.Fprintf(os.Stderr, "media retention: deleted %d file(s), %s\n", rep.Files, humanBytes(rep.Bytes))
+				}
+			})
+		}()
+		// Stop the loop and let a prune in progress finish before the
+		// store is closed and its lock released.
+		defer func() { cancel(); <-done }()
 	}
 
 	drv := newProductionDriver(c)

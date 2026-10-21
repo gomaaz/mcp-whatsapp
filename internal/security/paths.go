@@ -56,10 +56,40 @@ func resolveRoot(allowedRoot string) (string, error) {
 // confine rejects resolved paths that are neither root itself nor under it;
 // field names the offending parameter in the error.
 func confine(field, resolved, root string) error {
-	if resolved != root && !strings.HasPrefix(resolved, root+string(filepath.Separator)) {
+	if !within(resolved, root) {
 		return fmt.Errorf("%s %q is outside allowed root %q; set WHATSAPP_MCP_MEDIA_ROOT or place the file under that root", field, resolved, root)
 	}
 	return nil
+}
+
+// within reports whether path is root itself or lies under it. Both must be
+// absolute and cleaned.
+func within(path, root string) bool {
+	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
+}
+
+// ResolveWithin resolves an existing path through any symlinks (and, on
+// Windows, junctions) and returns it if it is root itself or lies under root,
+// which is resolved the same way. It is the check ValidateMediaPath applies,
+// for code that deletes inside a directory tree it owns, such as the media
+// cache under the store directory.
+func ResolveWithin(path, root string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("invalid path %q: %w", path, err)
+	}
+	resolved, err := filepath.EvalSymlinks(filepath.Clean(abs))
+	if err != nil {
+		return "", fmt.Errorf("path %q not accessible: %w", abs, err)
+	}
+	rootResolved, err := resolveRoot(root)
+	if err != nil {
+		return "", err
+	}
+	if !within(resolved, rootResolved) {
+		return "", fmt.Errorf("path %q resolves outside %q", abs, rootResolved)
+	}
+	return resolved, nil
 }
 
 // ValidateOutputPath is the sister of ValidateMediaPath for files that do

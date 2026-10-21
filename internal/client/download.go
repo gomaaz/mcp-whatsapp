@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/sealjay/mcp-whatsapp/internal/mediacache"
 	"github.com/sealjay/mcp-whatsapp/internal/security"
 	"go.mau.fi/whatsmeow"
 )
@@ -81,6 +82,20 @@ func (c *Client) Download(ctx context.Context, messageID, chatJID, outputPath st
 		}
 	}
 
+	// A message its sender deleted for everyone stays unreadable unless
+	// -keep-revoked is set, also when its file was cached before the delete
+	// and removing it then failed.
+	if !c.keepRevoked {
+		revoked, err := c.store.MessageRevoked(ctx, messageID, chatJID)
+		if err != nil {
+			return DownloadResult{Success: false, Message: fmt.Sprintf("failed to read message: %v", err)}
+		}
+		if revoked {
+			c.removeMessageMedia(chatJID, messageID)
+			return DownloadResult{Success: false, Message: "message was deleted by its sender; its media is no longer stored"}
+		}
+	}
+
 	// Skip-if-exists at the caller's destination: symmetric with the cache
 	// short-circuit below. Idempotent re-calls are a no-op.
 	if resolvedOutput != "" {
@@ -95,16 +110,16 @@ func (c *Client) Download(ctx context.Context, messageID, chatJID, outputPath st
 		}
 	}
 
-	storeDir, err := filepath.Abs(c.store.Dir())
+	// Media retention (PruneMedia) must not delete the cache directory
+	// between MkdirAll and the file landing in it, nor a file this call is
+	// about to return.
+	c.mediaMu.RLock()
+	defer c.mediaMu.RUnlock()
+
+	messageDir, err := mediacache.MessageDir(c.store.Dir(), chatJID, messageID)
 	if err != nil {
-		return DownloadResult{Success: false, Message: fmt.Sprintf("resolve store dir: %v", err)}
+		return DownloadResult{Success: false, Message: err.Error()}
 	}
-	storeDir = filepath.Clean(storeDir)
-	chatDir := filepath.Clean(filepath.Join(storeDir, strings.ReplaceAll(chatJID, ":", "_")))
-	if !strings.HasPrefix(chatDir, storeDir+string(filepath.Separator)) {
-		return DownloadResult{Success: false, Message: "invalid chat directory: path escapes store"}
-	}
-	messageDir := filepath.Join(chatDir, hex.EncodeToString([]byte(messageID)))
 	if err := os.MkdirAll(messageDir, 0o700); err != nil {
 		return DownloadResult{Success: false, Message: fmt.Sprintf("failed to create chat directory: %v", err)}
 	}
@@ -121,6 +136,10 @@ func (c *Client) Download(ctx context.Context, messageID, chatJID, outputPath st
 	// fallback) and return the output path instead.
 	if _, statErr := os.Stat(localPath); statErr == nil {
 		if err := validateCachedMedia(localPath, fileLength, fileSHA256); err == nil {
+			// Retention counts from the last use, so a file handed out now
+			// (for example to a transcription still reading it) is not pruned.
+			now := time.Now()
+			_ = os.Chtimes(localPath, now, now)
 			return finalizeDownload(localPath, absPath, resolvedOutput, mediaType, filename)
 		} else {
 			c.log.Warnf("Ignoring invalid cached media for message %s: %v", c.redactor.MsgID(messageID), err)

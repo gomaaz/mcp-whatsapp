@@ -123,19 +123,29 @@ func (c *Client) normalizeIncomingMessage(
 	content := extractTextContent(raw)
 	mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength := extractMediaInfo(raw)
 
+	m := store.Message{
+		ID:         msgID,
+		ChatJID:    chatJID,
+		Sender:     sender,
+		Content:    content,
+		Timestamp:  timestamp,
+		IsFromMe:   isFromMe,
+		MediaType:  mediaType,
+		Filename:   filename,
+		URL:        url,
+		DirectPath: directPath,
+	}
+	if ci := contextInfoOf(raw); ci != nil {
+		m.IsForwarded = ci.GetIsForwarded()
+		if quotedID := ci.GetStanzaID(); quotedID != "" {
+			m.QuotedMessageID = quotedID
+			m.QuotedSender = c.quotedSenderUser(ci.GetParticipant())
+			m.QuotedText = quotedSnippet(ci.GetQuotedMessage())
+		}
+	}
+
 	return normalizedMessage{
-		msg: store.Message{
-			ID:         msgID,
-			ChatJID:    chatJID,
-			Sender:     sender,
-			Content:    content,
-			Timestamp:  timestamp,
-			IsFromMe:   isFromMe,
-			MediaType:  mediaType,
-			Filename:   filename,
-			URL:        url,
-			DirectPath: directPath,
-		},
+		msg:           m,
 		mediaKey:      mediaKey,
 		fileSHA256:    fileSHA256,
 		fileEncSHA256: fileEncSHA256,
@@ -493,6 +503,68 @@ func extractTextContent(msg *waProto.Message) string {
 		return doc.GetCaption()
 	}
 	return ""
+}
+
+// contextInfoOf returns the ContextInfo of the message types that can quote
+// another message or carry the forwarded flag: extended text, image, video,
+// document, audio and sticker. Plain Conversation messages have none.
+func contextInfoOf(msg *waProto.Message) *waProto.ContextInfo {
+	if msg == nil {
+		return nil
+	}
+	switch {
+	case msg.GetExtendedTextMessage() != nil:
+		return msg.GetExtendedTextMessage().GetContextInfo()
+	case msg.GetImageMessage() != nil:
+		return msg.GetImageMessage().GetContextInfo()
+	case msg.GetVideoMessage() != nil:
+		return msg.GetVideoMessage().GetContextInfo()
+	case msg.GetDocumentMessage() != nil:
+		return msg.GetDocumentMessage().GetContextInfo()
+	case msg.GetAudioMessage() != nil:
+		return msg.GetAudioMessage().GetContextInfo()
+	case msg.GetStickerMessage() != nil:
+		return msg.GetStickerMessage().GetContextInfo()
+	}
+	return nil
+}
+
+// quotedSnippet summarises the copy of the quoted message that a reply
+// carries: its text or caption, with a media marker for image, video, audio,
+// document and sticker messages (see store.QuoteSnippet).
+func quotedSnippet(quoted *waProto.Message) string {
+	if quoted == nil {
+		return ""
+	}
+	mediaType, filename := "", ""
+	switch {
+	case quoted.GetImageMessage() != nil:
+		mediaType = "image"
+	case quoted.GetVideoMessage() != nil:
+		mediaType = "video"
+	case quoted.GetAudioMessage() != nil:
+		mediaType = "audio"
+	case quoted.GetDocumentMessage() != nil:
+		mediaType = "document"
+		filename = quoted.GetDocumentMessage().GetFileName()
+	case quoted.GetStickerMessage() != nil:
+		mediaType = "sticker"
+	}
+	return store.QuoteSnippet(extractTextContent(quoted), mediaType, filename)
+}
+
+// quotedSenderUser turns the participant JID of a quoted message into the
+// bare phone/user part, resolving a LID to the phone number when the
+// mapping is known. Returns "" when the participant is empty or unparsable.
+func (c *Client) quotedSenderUser(participant string) string {
+	if participant == "" {
+		return ""
+	}
+	jid, err := types.ParseJID(participant)
+	if err != nil || jid.User == "" {
+		return ""
+	}
+	return strings.Split(c.store.ResolveLIDToJID(jid.ToNonAD().String()), "@")[0]
 }
 
 // extractMediaInfo pulls out the storable media fields from a Message.

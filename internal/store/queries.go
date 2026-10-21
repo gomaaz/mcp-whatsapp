@@ -9,9 +9,20 @@ import (
 	"time"
 )
 
-// listMessageColumns is the 9-column projection shared by ListMessages and
-// queryContextWindow.
-const listMessageColumns = "messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.rowid"
+// listMessageColumns is the 18-column projection shared by ListMessages,
+// messageContext and queryContextWindow. It must be selected FROM
+// listMessageFrom, which provides the chats and quoted aliases. The quoted.*
+// columns describe the cached original of a reply and are NULL when it is not
+// a reply or the original is not cached.
+const listMessageColumns = "messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.rowid, " +
+	"messages.quoted_message_id, messages.quoted_sender, messages.quoted_text, messages.is_forwarded, " +
+	"quoted.content, quoted.media_type, quoted.filename, quoted.sender, quoted.is_from_me"
+
+// listMessageFrom joins each message to its chat and, for replies, to the
+// quoted original in the same chat when it is cached.
+const listMessageFrom = `messages
+	JOIN chats ON messages.chat_jid = chats.jid
+	LEFT JOIN messages AS quoted ON quoted.chat_jid = messages.chat_jid AND quoted.id = messages.quoted_message_id`
 
 // MediaTypeNone is the MediaType filter value that selects text-only messages
 // (no media attachment).
@@ -96,8 +107,7 @@ func (s *Store) ListMessages(ctx context.Context, params ListMessagesParams) ([]
 	}
 
 	var b strings.Builder
-	b.WriteString("SELECT " + listMessageColumns + " FROM messages")
-	b.WriteString(" JOIN chats ON messages.chat_jid = chats.jid")
+	b.WriteString("SELECT " + listMessageColumns + " FROM " + listMessageFrom)
 	if len(whereClauses) > 0 {
 		b.WriteString(" WHERE ")
 		b.WriteString(strings.Join(whereClauses, " AND "))
@@ -331,8 +341,7 @@ func (s *Store) GetMessageContext(ctx context.Context, messageID string, before,
 func (s *Store) messageContext(ctx context.Context, where string, arg any, before, after int) (*MessageContext, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT `+listMessageColumns+`
-		FROM messages
-		JOIN chats ON messages.chat_jid = chats.jid
+		FROM `+listMessageFrom+`
 		WHERE `+where, arg)
 
 	target, err := s.scanListMessageRow(row)
@@ -422,8 +431,7 @@ func (s *Store) queryContextWindow(ctx context.Context, chatJID string, anchorRo
 	}
 	q := fmt.Sprintf(`
 		SELECT `+listMessageColumns+`
-		FROM messages
-		JOIN chats ON messages.chat_jid = chats.jid
+		FROM `+listMessageFrom+`
 		JOIN messages AS anchor ON anchor.rowid = ?
 		WHERE messages.chat_jid = ?
 			AND (messages.timestamp %[1]s anchor.timestamp
@@ -448,38 +456,67 @@ func (s *Store) queryContextWindow(ctx context.Context, chatJID string, anchorRo
 	return out, rows.Err()
 }
 
-// scanListMessageRow scans the 9-column projection used by list_messages and
-// the context window queries.
+// scanListMessageRow scans the 18-column listMessageColumns projection used
+// by list_messages and the context window queries.
 func (s *Store) scanListMessageRow(row interface {
 	Scan(dest ...any) error
 }) (Message, error) {
 	var (
-		ts        time.Time
-		sender    string
-		chatName  sql.NullString
-		content   sql.NullString
-		isFromMe  bool
-		chatJID   string
-		id        string
-		mediaType sql.NullString
-		rowID     int64
+		ts            time.Time
+		sender        string
+		chatName      sql.NullString
+		content       sql.NullString
+		isFromMe      bool
+		chatJID       string
+		id            string
+		mediaType     sql.NullString
+		rowID         int64
+		quotedID      sql.NullString
+		quotedSender  sql.NullString
+		quotedText    sql.NullString
+		isForwarded   sql.NullBool
+		origContent   sql.NullString
+		origMediaType sql.NullString
+		origFilename  sql.NullString
+		origSender    sql.NullString
+		origIsFromMe  sql.NullBool
 	)
-	if err := row.Scan(&ts, &sender, &chatName, &content, &isFromMe, &chatJID, &id, &mediaType, &rowID); err != nil {
+	if err := row.Scan(&ts, &sender, &chatName, &content, &isFromMe, &chatJID, &id, &mediaType, &rowID,
+		&quotedID, &quotedSender, &quotedText, &isForwarded,
+		&origContent, &origMediaType, &origFilename, &origSender, &origIsFromMe); err != nil {
 		return Message{}, err
 	}
 	m := Message{
-		ID:        id,
-		ChatJID:   chatJID,
-		Sender:    sender,
-		Content:   content.String,
-		Timestamp: ts.UTC(),
-		IsFromMe:  isFromMe,
-		MediaType: mediaType.String,
-		ChatName:  chatName.String,
-		rowID:     rowID,
+		ID:              id,
+		ChatJID:         chatJID,
+		Sender:          sender,
+		Content:         content.String,
+		Timestamp:       ts.UTC(),
+		IsFromMe:        isFromMe,
+		MediaType:       mediaType.String,
+		ChatName:        chatName.String,
+		QuotedMessageID: quotedID.String,
+		QuotedSender:    quotedSender.String,
+		QuotedText:      quotedText.String,
+		IsForwarded:     isForwarded.Bool,
+		rowID:           rowID,
+	}
+	// The original is cached (quoted.is_from_me is NOT NULL for any stored
+	// row): prefer its text and author over what the reply embedded.
+	if m.QuotedMessageID != "" && origIsFromMe.Valid {
+		if snippet := QuoteSnippet(origContent.String, origMediaType.String, origFilename.String); snippet != "" {
+			m.QuotedText = snippet
+		}
+		m.QuotedFromMe = origIsFromMe.Bool
+		if m.QuotedSender == "" {
+			m.QuotedSender = origSender.String
+		}
 	}
 	m.IsGroup = strings.HasSuffix(m.ChatJID, "@g.us")
 	m.SenderPhone = s.resolveSenderPhone(m.Sender)
+	if m.QuotedSender != "" {
+		m.QuotedSender = s.resolveSenderPhone(m.QuotedSender)
+	}
 	return m, nil
 }
 

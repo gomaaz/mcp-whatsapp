@@ -55,6 +55,20 @@ type Message struct {
 	DirectPath  string `json:"direct_path,omitempty"`
 	ChatName    string `json:"chat_name,omitempty"`
 	PhoneNumber string `json:"phone_number,omitempty"`
+	// QuotedMessageID is the ID of the message this one replies to (the
+	// ContextInfo stanza ID), empty when it is not a reply.
+	QuotedMessageID string `json:"quoted_message_id,omitempty"`
+	// QuotedSender is the bare phone/user part of the quoted message's
+	// author, LID-resolved when the mapping was known.
+	QuotedSender string `json:"quoted_sender,omitempty"`
+	// QuotedText is a short snippet of the quoted message (see QuoteSnippet).
+	// Reads prefer the cached original over the snippet embedded in the reply.
+	QuotedText string `json:"quoted_text,omitempty"`
+	// QuotedFromMe is set on read when the cached original is our own
+	// message. It is not stored.
+	QuotedFromMe bool `json:"quoted_from_me,omitempty"`
+	// IsForwarded marks a message WhatsApp flagged as forwarded.
+	IsForwarded bool `json:"is_forwarded,omitempty"`
 	// rowID is the SQLite rowid of the cached row, set by the list/context
 	// queries. It breaks ties between messages that share a timestamp
 	// (a screenshot and its follow-up text sent in the same second).
@@ -190,10 +204,12 @@ func (s *Store) StoreMessage(ctx context.Context, m Message, mediaKey, fileSHA25
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT OR REPLACE INTO messages
-		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length,
+		 quoted_message_id, quoted_sender, quoted_text, is_forwarded)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.ChatJID, m.Sender, m.Content, dbTime(m.Timestamp), m.IsFromMe,
 		m.MediaType, m.Filename, m.URL, m.DirectPath, mediaKey, fileSHA256, fileEncSHA256, fileLength,
+		m.QuotedMessageID, m.QuotedSender, m.QuotedText, m.IsForwarded,
 	)
 	return err
 }
@@ -340,6 +356,10 @@ CREATE TABLE IF NOT EXISTS messages (
 	file_enc_sha256 BLOB,
 	file_length INTEGER,
 	poll_options_json TEXT,
+	quoted_message_id TEXT,
+	quoted_sender TEXT,
+	quoted_text TEXT,
+	is_forwarded BOOLEAN DEFAULT 0,
 	PRIMARY KEY (id, chat_jid),
 	FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 );
@@ -364,8 +384,7 @@ func migrateSchema(db *sql.DB) error {
 		return fmt.Errorf("pragma table_info(messages): %w", err)
 	}
 	defer rows.Close()
-	hasPollOptions := false
-	hasDirectPath := false
+	existing := make(map[string]bool)
 	for rows.Next() {
 		var (
 			cid        int
@@ -378,25 +397,31 @@ func migrateSchema(db *sql.DB) error {
 		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &primaryKey); err != nil {
 			return fmt.Errorf("scan table_info(messages): %w", err)
 		}
-		if name == "poll_options_json" {
-			hasPollOptions = true
-		}
-		if name == "direct_path" {
-			hasDirectPath = true
-		}
+		existing[name] = true
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate table_info(messages): %w", err)
 	}
-	if !hasPollOptions {
-		if _, err := db.Exec("ALTER TABLE messages ADD COLUMN poll_options_json TEXT"); err != nil {
-			return fmt.Errorf("add column poll_options_json: %w", err)
+	rows.Close()
+	for _, col := range addedMessageColumns {
+		if existing[col.name] {
+			continue
 		}
-	}
-	if !hasDirectPath {
-		if _, err := db.Exec("ALTER TABLE messages ADD COLUMN direct_path TEXT"); err != nil {
-			return fmt.Errorf("add column direct_path: %w", err)
+		if _, err := db.Exec("ALTER TABLE messages ADD COLUMN " + col.name + " " + col.def); err != nil {
+			return fmt.Errorf("add column %s: %w", col.name, err)
 		}
 	}
 	return normalizeTimestamps(db)
+}
+
+// addedMessageColumns lists the messages columns added after the original
+// layout, in the order they were introduced. migrateSchema adds any that a
+// legacy database lacks.
+var addedMessageColumns = []struct{ name, def string }{
+	{"poll_options_json", "TEXT"},
+	{"direct_path", "TEXT"},
+	{"quoted_message_id", "TEXT"},
+	{"quoted_sender", "TEXT"},
+	{"quoted_text", "TEXT"},
+	{"is_forwarded", "BOOLEAN DEFAULT 0"},
 }

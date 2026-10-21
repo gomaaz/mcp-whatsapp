@@ -2,9 +2,13 @@ package store
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// maxQuoteRunes caps the length of a stored quote snippet.
+const maxQuoteRunes = 200
 
 // FormatMessage renders a single message in the textual format expected by
 // downstream Claude clients. Every line carries the message ID and chat JID so
@@ -43,11 +47,59 @@ func (s *Store) FormatMessage(ctx context.Context, m Message, showChatInfo bool)
 	b.WriteString("From: ")
 	b.WriteString(senderName)
 	b.WriteString(": ")
+	if m.IsForwarded {
+		b.WriteString("[forwarded] ")
+	}
+	if m.QuotedMessageID != "" {
+		b.WriteString(s.formatQuote(ctx, m))
+		b.WriteString(" ")
+	}
 	b.WriteString(contentPrefix)
 	b.WriteString(m.Content)
 	b.WriteString("\n")
 
 	return b.String()
+}
+
+// formatQuote renders the reply marker of a message, e.g.
+// (reply to 3EB0ABC from Alice: "see you at 5"). The author and snippet parts
+// are left out when unknown.
+func (s *Store) formatQuote(ctx context.Context, m Message) string {
+	var b strings.Builder
+	b.WriteString("(reply to ")
+	b.WriteString(m.QuotedMessageID)
+	switch {
+	case m.QuotedFromMe:
+		b.WriteString(" from Me")
+	case m.QuotedSender != "":
+		b.WriteString(" from ")
+		b.WriteString(s.GetSenderName(ctx, m.QuotedSender))
+	}
+	if m.QuotedText != "" {
+		b.WriteString(": ")
+		b.WriteString(strconv.Quote(m.QuotedText))
+	}
+	b.WriteString(")")
+	return b.String()
+}
+
+// QuoteSnippet builds the short text kept for a quoted message: its text,
+// prefixed by a media marker ("[image]", "[document: offer.pdf]") when it
+// carries media, on one line and cut to maxQuoteRunes runes. Returns "" when
+// there is neither text nor media.
+func QuoteSnippet(text, mediaType, filename string) string {
+	marker := ""
+	switch {
+	case mediaType == "document" && filename != "":
+		marker = "[document: " + filename + "]"
+	case mediaType != "":
+		marker = "[" + mediaType + "]"
+	}
+	snippet := strings.Join(strings.Fields(marker+" "+text), " ")
+	if r := []rune(snippet); len(r) > maxQuoteRunes {
+		snippet = string(r[:maxQuoteRunes-1]) + "…"
+	}
+	return snippet
 }
 
 // FormatMessagesList renders a slice of messages. Returns the literal string

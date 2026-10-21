@@ -146,3 +146,53 @@ func TestRedactor_MsgID_EmptyDebug(t *testing.T) {
 		t.Fatalf("MsgID debug mode empty string should be empty, got %q", got)
 	}
 }
+
+func TestRedactor_Name(t *testing.T) {
+	r := &Redactor{}
+	cases := map[string]string{
+		"":                     "[no name]",
+		"Karin Müller":         "[name: 12 chars]",
+		"Rechnung_Mueller.pdf": "[name: 20 chars]",
+	}
+	for in, want := range cases {
+		if got := r.Name(in); got != want {
+			t.Errorf("Name(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestRedactor_Name_Debug(t *testing.T) {
+	r := &Redactor{Debug: true}
+	if got := r.Name("Karin Müller"); got != "Karin Müller" {
+		t.Errorf("Name = %q, want the name unchanged", got)
+	}
+	if got := r.Name("+491751234567"); got != "****34567" {
+		t.Errorf("Name = %q, want phone digits masked", got)
+	}
+}
+
+func TestRedactor_Line(t *testing.T) {
+	r := &Redactor{}
+	cases := map[string]string{
+		"Error decrypting message 3EB0AA from 491751234567:12@s.whatsapp.net: bad mac":    "Error decrypting message 3EB0AA from …4567: bad mac",
+		"Migrated 3 sessions from 491751234567.0:3@s.whatsapp.net to 123456789012345@lid": "Migrated 3 sessions from …4567 to …2345",
+		"Error parsing group 120363012345678901@g.us: x":                                  "Error parsing group …8901: x",
+		"Updated LID to 123456789012345@lid":                                              "Updated LID to …2345",
+		"call +491751234567 or 4917512345678":                                             "call …4567 or …5678",
+		"Uploading 812 new prekeys (123456789 bytes)":                                     "Uploading 812 new prekeys (123456789 bytes)",
+		"mail kunde@example.com":                                                          "mail kunde@example.com",
+	}
+	for in, want := range cases {
+		if got := r.Line(in); got != want {
+			t.Errorf("Line(%q)\n got %q\nwant %q", in, got, want)
+		}
+	}
+}
+
+func TestRedactor_Line_Debug(t *testing.T) {
+	r := &Redactor{Debug: true}
+	in := "Error decrypting message from 491751234567:12@s.whatsapp.net"
+	if got := r.Line(in); got != in {
+		t.Errorf("Line = %q, want the line unchanged", got)
+	}
+}

@@ -92,8 +92,8 @@ func (c *Client) storeReaction(ctx context.Context, u store.ReactionUpdate) {
 		return
 	}
 	if err := c.store.StoreReaction(ctx, u); err != nil {
-		c.log.Warnf("Failed to store reaction to %s in %s: %v", u.MessageID, c.redactor.JID(u.ChatJID), err)
+		c.log.Warnf("Failed to store reaction to %s in %s: %v", c.redactor.MsgID(u.MessageID), c.redactor.JID(u.ChatJID), err)
 		return
 	}
-	c.log.Debugf("Stored reaction to %s in %s", u.MessageID, c.redactor.JID(u.ChatJID))
+	c.log.Debugf("Stored reaction to %s in %s", c.redactor.MsgID(u.MessageID), c.redactor.JID(u.ChatJID))
 }

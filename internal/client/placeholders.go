@@ -111,10 +111,10 @@ func contactName(displayName, vcard string) string {
 // get no placeholder.
 func (c *Client) handleUndecryptable(evt *events.UndecryptableMessage) {
 	if evt.DecryptFailMode == events.DecryptFailHide || evt.Info.Chat.String() == types.StatusBroadcastJID.String() {
-		c.log.Debugf("Undecryptable message %s in %s not stored", evt.Info.ID, c.redactor.JID(evt.Info.Chat.String()))
+		c.log.Debugf("Undecryptable message %s in %s not stored", c.redactor.MsgID(evt.Info.ID), c.redactor.JID(evt.Info.Chat.String()))
 		return
 	}
-	c.log.Warnf("Undecryptable message %s from %s, storing a placeholder", evt.Info.ID, c.redactor.JID(evt.Info.Sender.String()))
+	c.log.Warnf("Undecryptable message %s from %s, storing a placeholder", c.redactor.MsgID(evt.Info.ID), c.redactor.JID(evt.Info.Sender.String()))
 
 	nm := c.normalizeIncomingMessage(
 		evt.Info.Chat.String(),

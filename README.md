@@ -273,7 +273,11 @@ This bumps `go.mau.fi/whatsmeow@main`, re-tidies, builds, and tests. If green, c
 
 ### Debug logging
 
-By default, stderr logs redact JIDs to `…<last-4>`, summarise bodies as `[<length>B: text|url|command]` and collapse media URLs to `<scheme>://<host>/…`. To see content while debugging, run `./bin/whatsapp-mcp -debug serve` or set `WHATSAPP_MCP_DEBUG=1`. Even then, phone-number-shaped digits show only their last 5 (`+15551234567` → `****34567`). That is obfuscation, not anonymisation: someone who knows your contacts can still correlate them.
+Log lines start with a UTC timestamp ending in `Z` (`2026-10-21T09:12:33.123Z`), and message times inside them are UTC too, so they match the times in tool output.
+
+By default, stderr logs redact JIDs to `…<last-4>`, shorten message IDs to `…<last-6>`, summarise bodies as `[<length>B: text|url|command]`, show contact, group and file names only as `[name: <n> chars]` and collapse media URLs to `<scheme>://<host>/…`. As a safety net, every line is scrubbed once more before it is written: JIDs and runs of 10 or more digits left in error values or in whatsmeow's own lines become `…<last-4>`. whatsmeow's internal logger only passes warnings and errors, because at INFO it names your own number and, during session migrations, your contacts' numbers. Transcripts are never logged.
+
+To see content while debugging, run `./bin/whatsapp-mcp -debug serve` or set `WHATSAPP_MCP_DEBUG=1`. That shows full message IDs, bodies and names, turns off the scrubbing and lets whatsmeow log at INFO. Even then, phone-number-shaped digits in JIDs, bodies and names show only their last 5 (`+15551234567` → `****34567`). That is obfuscation, not anonymisation: someone who knows your contacts can still correlate them.
 
 For Claude Desktop integration issues, see the [MCP documentation](https://modelcontextprotocol.io/quickstart/server#claude-for-desktop-integration-issues).
 

@@ -89,6 +89,13 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		redactor = &security.Redactor{}
 	}
 
+	// Without -debug, every line is scrubbed of JIDs and phone numbers the
+	// call site missed, and whatsmeow's own logger only passes warnings and
+	// errors: at INFO it names our own JID and, during session migrations,
+	// customers' numbers.
+	waLogger := newRedactingLogger(logger, redactor, "WARN")
+	logger = newRedactingLogger(logger, redactor, "")
+
 	limiter := cfg.RateLimiter
 	if limiter == nil {
 		limiter = ratelimit.New(ratelimit.DefaultConfig())
@@ -114,7 +121,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("chmod store dir: %w", err)
 	}
 
-	dbLog := NewStderrLogger("Database", "INFO", true)
+	dbLog := newRedactingLogger(NewStderrLogger("Database", "INFO", true), redactor, "")
 	waPath := filepath.Join(cfg.StoreDir, "whatsapp.db")
 	container, err := sqlstore.New(ctx, "sqlite3", "file:"+waPath+"?_foreign_keys=on", dbLog)
 	if err != nil {
@@ -136,7 +143,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		}
 	}
 
-	wa := whatsmeow.NewClient(device, logger)
+	wa := whatsmeow.NewClient(device, waLogger)
 	if wa == nil {
 		return nil, errors.New("failed to create whatsmeow client")
 	}

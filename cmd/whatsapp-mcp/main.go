@@ -33,7 +33,7 @@ Commands:
 
 Global flags (before the command):
   -store DIR   Directory holding messages.db and whatsapp.db (default: ./store)
-  -debug       Show full JIDs and message bodies in logs (default: redacted)
+  -debug       Show full JIDs, message IDs, bodies and names in logs (default: redacted)
   -read-only   Register only tools without outbound effect: no sending, editing,
                deleting, read receipts or group/privacy changes
                (env WHATSAPP_MCP_READ_ONLY=1; the flag wins when both are set)
@@ -74,7 +74,7 @@ func main() {
 	fs := flag.NewFlagSet("whatsapp-mcp", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.StringVar(&storeDir, "store", "./store", "directory holding messages.db and whatsapp.db")
-	fs.BoolVar(&debug, "debug", false, "show full JIDs and message bodies in logs (default: redacted)")
+	fs.BoolVar(&debug, "debug", false, "show full JIDs, message IDs, bodies and names in logs (default: redacted)")
 	fs.BoolVar(&readOnly, "read-only", false, "register only tools without outbound effect (env WHATSAPP_MCP_READ_ONLY=1)")
 	fs.BoolVar(&keepRevoked, "keep-revoked", false, "keep the text of messages deleted by their sender (env WHATSAPP_MCP_KEEP_REVOKED=1)")
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }

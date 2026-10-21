@@ -49,7 +49,7 @@ func (c *Client) handleLiveChange(msg *events.Message, nm normalizedMessage, pm 
 	}
 	text, ok := editedText(pm.GetEditedMessage())
 	if !ok {
-		c.log.Debugf("Ignoring edit of %s in %s: no text in the edited message", ch.ID, c.redactor.JID(ch.ChatJID))
+		c.log.Debugf("Ignoring edit of %s in %s: no text in the edited message", c.redactor.MsgID(ch.ID), c.redactor.JID(ch.ChatJID))
 		return
 	}
 	c.applyEdit(ctx, ch, text)
@@ -90,16 +90,16 @@ func (c *Client) applyRevoke(ctx context.Context, ch store.MessageChange) store.
 }
 
 func (c *Client) logChange(kind string, ch store.MessageChange, res store.ChangeResult, err error) {
-	chat := c.redactor.JID(ch.ChatJID)
+	chat, id := c.redactor.JID(ch.ChatJID), c.redactor.MsgID(ch.ID)
 	switch {
 	case err != nil:
-		c.log.Warnf("Failed to apply %s of %s in %s: %v", kind, ch.ID, chat, err)
+		c.log.Warnf("Failed to apply %s of %s in %s: %v", kind, id, chat, err)
 	case res == store.ChangeApplied:
-		c.log.Infof("Applied %s of %s in %s", kind, ch.ID, chat)
+		c.log.Infof("Applied %s of %s in %s", kind, id, chat)
 	case res == store.ChangeSenderMismatch:
-		c.log.Infof("Ignoring %s of %s in %s: %s", kind, ch.ID, chat, res)
+		c.log.Infof("Ignoring %s of %s in %s: %s", kind, id, chat, res)
 	default:
-		c.log.Debugf("Ignoring %s of %s in %s: %s", kind, ch.ID, chat, res)
+		c.log.Debugf("Ignoring %s of %s in %s: %s", kind, id, chat, res)
 	}
 }
 

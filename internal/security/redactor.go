@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // phoneDigitRun matches international-format phone numbers: an optional "+"
@@ -108,6 +109,50 @@ func (r *Redactor) MsgID(id string) string {
 		return "…" + string(runes[len(runes)-6:])
 	}
 	return "…" + id
+}
+
+// Name redacts a contact, push, group or file name for log output.
+// Non-debug: only whether a name is present and its length, as
+// "[name: <n> chars]" or "[no name]". Debug: the name with phone digit runs
+// masked, as in Body.
+func (r *Redactor) Name(name string) string {
+	if r.Debug {
+		return maskPhones(name)
+	}
+	if name == "" {
+		return "[no name]"
+	}
+	return fmt.Sprintf("[name: %d chars]", utf8.RuneCountInString(name))
+}
+
+// jidInText matches a WhatsApp JID inside free text: a user part with an
+// optional ".agent" and ":device" suffix, "@" and one of the WhatsApp
+// servers. Ordinary e-mail addresses do not match.
+var jidInText = regexp.MustCompile(`[0-9A-Za-z_+-]+(?:\.\d+)?(?::\d+)?@(?:s\.whatsapp\.net|c\.us|lid|g\.us|broadcast|newsletter|hosted\.lid|hosted|bot|interop|msgr|call)\b`)
+
+// Line scrubs a finished log line, as a safety net for text the call site
+// did not redact itself, such as whatsmeow's own log lines and error values.
+// Non-debug: every JID becomes JID() of its user part (without agent and
+// device), and every remaining run of 10 or more digits becomes "…" + its
+// last 4 digits. Debug: the line is returned unchanged.
+//
+// Line cannot recognise names or message text; call sites must still pass
+// those through Name and Body.
+func (r *Redactor) Line(s string) string {
+	if r.Debug {
+		return s
+	}
+	s = jidInText.ReplaceAllStringFunc(s, func(match string) string {
+		user, _ := splitJID(match)
+		if i := strings.IndexAny(user, ".:"); i >= 0 {
+			user = user[:i]
+		}
+		return r.JID(user)
+	})
+	return phoneDigitRun.ReplaceAllStringFunc(s, func(match string) string {
+		digits := strings.TrimPrefix(match, "+")
+		return "…" + digits[len(digits)-4:]
+	})
 }
 
 // maskPhones replaces phone digit runs with "****" + last 5 characters.

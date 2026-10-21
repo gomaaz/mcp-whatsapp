@@ -10,6 +10,8 @@ import (
 	"time"
 
 	waLog "go.mau.fi/whatsmeow/util/log"
+
+	"github.com/sealjay/mcp-whatsapp/internal/security"
 )
 
 var (
@@ -26,6 +28,16 @@ var (
 		"ERROR": 3,
 	}
 )
+
+// logTimestampLayout prefixes every log line: UTC with millisecond precision
+// and a "Z" suffix, so log times line up with the UTC times in tool output.
+const logTimestampLayout = "2006-01-02T15:04:05.000Z07:00"
+
+// logTime renders a message timestamp inside a log line the way tool output
+// does: RFC 3339 in UTC ("2026-10-21T09:12:33Z").
+func logTime(t time.Time) string {
+	return t.UTC().Format(time.RFC3339)
+}
 
 // stderrLogger is a copy of whatsmeow's stdout logger that writes to an
 // io.Writer (typically os.Stderr) instead of os.Stdout.
@@ -59,7 +71,7 @@ func (s *stderrLogger) outputf(level, msg string, args ...interface{}) {
 		}
 	}
 	fmt.Fprintf(s.out, "%s%s [%s %s] %s%s\n",
-		time.Now().Format("15:04:05.000"),
+		time.Now().UTC().Format(logTimestampLayout),
 		colorStart, s.mod, level, fmt.Sprintf(msg, args...), colorReset,
 	)
 }
@@ -76,4 +88,48 @@ func (s *stderrLogger) Sub(mod string) waLog.Logger {
 		color: s.color,
 		min:   s.min,
 	}
+}
+
+// redactingLogger passes every formatted line through Redactor.Line before
+// handing it to the wrapped logger, and drops lines below min. It catches
+// JIDs and phone numbers in text the call site did not redact: whatsmeow's
+// own log lines and error values.
+type redactingLogger struct {
+	inner    waLog.Logger
+	redactor *security.Redactor
+	min      int
+}
+
+// newRedactingLogger wraps inner for non-debug operation. minLevel ("" for
+// no extra filter, or "DEBUG", "INFO", "WARN", "ERROR") drops quieter lines
+// before they reach inner. With r.Debug set, inner is returned unchanged.
+func newRedactingLogger(inner waLog.Logger, r *security.Redactor, minLevel string) waLog.Logger {
+	if r == nil || r.Debug {
+		return inner
+	}
+	return &redactingLogger{inner: inner, redactor: r, min: logLevelToInt[strings.ToUpper(minLevel)]}
+}
+
+func (l *redactingLogger) emit(level string, out func(string, ...interface{}), msg string, args []interface{}) {
+	if logLevelToInt[level] < l.min {
+		return
+	}
+	out("%s", l.redactor.Line(fmt.Sprintf(msg, args...)))
+}
+
+func (l *redactingLogger) Errorf(msg string, args ...interface{}) {
+	l.emit("ERROR", l.inner.Errorf, msg, args)
+}
+func (l *redactingLogger) Warnf(msg string, args ...interface{}) {
+	l.emit("WARN", l.inner.Warnf, msg, args)
+}
+func (l *redactingLogger) Infof(msg string, args ...interface{}) {
+	l.emit("INFO", l.inner.Infof, msg, args)
+}
+func (l *redactingLogger) Debugf(msg string, args ...interface{}) {
+	l.emit("DEBUG", l.inner.Debugf, msg, args)
+}
+
+func (l *redactingLogger) Sub(mod string) waLog.Logger {
+	return &redactingLogger{inner: l.inner.Sub(mod), redactor: l.redactor, min: l.min}
 }

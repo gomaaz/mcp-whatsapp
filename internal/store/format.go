@@ -14,7 +14,9 @@ const maxQuoteRunes = 200
 // downstream Claude clients. Every line carries the message ID and chat JID so
 // any message (text or media) can be passed on to get_message_context or
 // download_media. The time is printed in UTC as RFC 3339 with a "Z" suffix,
-// the same form list_messages accepts for after/before.
+// the same form list_messages accepts for after/before. Messages the sender
+// deleted for everyone are marked "[deleted by sender]", edited ones
+// "[edited]".
 func (s *Store) FormatMessage(ctx context.Context, m Message, showChatInfo bool) string {
 	var b strings.Builder
 
@@ -47,6 +49,14 @@ func (s *Store) FormatMessage(ctx context.Context, m Message, showChatInfo bool)
 	b.WriteString("From: ")
 	b.WriteString(senderName)
 	b.WriteString(": ")
+	if m.RevokedAt != nil {
+		b.WriteString("[deleted by sender]")
+		if m.Content != "" || contentPrefix != "" || m.QuotedMessageID != "" || m.IsForwarded {
+			b.WriteString(" ")
+		}
+	} else if m.EditedAt != nil {
+		b.WriteString("[edited] ")
+	}
 	if m.IsForwarded {
 		b.WriteString("[forwarded] ")
 	}

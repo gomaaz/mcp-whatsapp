@@ -2,7 +2,7 @@ package main
 
 import "testing"
 
-func TestResolveReadOnly(t *testing.T) {
+func TestFlagOrEnv(t *testing.T) {
 	cases := []struct {
 		name      string
 		flagSet   bool
@@ -19,8 +19,8 @@ func TestResolveReadOnly(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := resolveReadOnly(tc.flagSet, tc.flagValue, tc.env); got != tc.want {
-				t.Fatalf("resolveReadOnly(%v, %v, %q) = %v, want %v", tc.flagSet, tc.flagValue, tc.env, got, tc.want)
+			if got := flagOrEnv(tc.flagSet, tc.flagValue, tc.env); got != tc.want {
+				t.Fatalf("flagOrEnv(%v, %v, %q) = %v, want %v", tc.flagSet, tc.flagValue, tc.env, got, tc.want)
 			}
 		})
 	}

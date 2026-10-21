@@ -19,7 +19,7 @@ import (
 	"github.com/sealjay/mcp-whatsapp/internal/store"
 )
 
-func runServe(storeDir string, redactor *security.Redactor, readOnly bool, args []string) int {
+func runServe(storeDir string, redactor *security.Redactor, readOnly, keepRevoked bool, args []string) int {
 	var (
 		addr        string
 		allowRemote bool
@@ -90,6 +90,7 @@ func runServe(storeDir string, redactor *security.Redactor, readOnly bool, args 
 		Logger:           client.NewStderrLogger("Client", "INFO", false),
 		AllowedMediaRoot: allowedMediaRoot,
 		Redactor:         redactor,
+		KeepRevoked:      keepRevoked,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "init client: %v\n", err)

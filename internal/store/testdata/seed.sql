@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS messages (
     quoted_sender TEXT,
     quoted_text TEXT,
     is_forwarded BOOLEAN DEFAULT 0,
+    edited_at TIMESTAMP,
+    revoked_at TIMESTAMP,
     PRIMARY KEY (id, chat_jid),
     FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 );

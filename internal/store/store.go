@@ -69,6 +69,12 @@ type Message struct {
 	QuotedFromMe bool `json:"quoted_from_me,omitempty"`
 	// IsForwarded marks a message WhatsApp flagged as forwarded.
 	IsForwarded bool `json:"is_forwarded,omitempty"`
+	// EditedAt is when the sender last edited the message; nil if never.
+	EditedAt *time.Time `json:"edited_at,omitempty"`
+	// RevokedAt is when the sender deleted the message for everyone; nil if
+	// not. Unless the daemon runs with -keep-revoked, the stored text and
+	// media keys of a revoked message are blanked (see ApplyRevoke).
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
 	// rowID is the SQLite rowid of the cached row, set by the list/context
 	// queries. It breaks ties between messages that share a timestamp
 	// (a screenshot and its follow-up text sent in the same second).
@@ -198,20 +204,54 @@ func (s *Store) StoreChat(jid, name string, lastMessageTime time.Time) error {
 // StoreMessage inserts or replaces a message row. Messages with no content and
 // no media type are dropped to avoid polluting the cache with signal-only
 // events (typing, receipts, key exchange, etc.).
+//
+// A message delivered again (history sync re-sending a cached message) must
+// not undo what the sender did to it later: a revoked row is left as it is,
+// and an edited row keeps its edited text unless m carries a newer edit
+// (m.EditedAt set and not before the stored one).
 func (s *Store) StoreMessage(ctx context.Context, m Message, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
 	if m.Content == "" && m.MediaType == "" {
 		return nil
 	}
-	_, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var (
+		oldContent sql.NullString
+		oldEdited  sql.NullTime
+		oldRevoked sql.NullTime
+	)
+	err = tx.QueryRowContext(ctx,
+		"SELECT content, edited_at, revoked_at FROM messages WHERE id = ? AND chat_jid = ?",
+		m.ID, m.ChatJID,
+	).Scan(&oldContent, &oldEdited, &oldRevoked)
+	switch {
+	case err == sql.ErrNoRows:
+	case err != nil:
+		return err
+	case oldRevoked.Valid:
+		return nil
+	case oldEdited.Valid && (m.EditedAt == nil || m.EditedAt.Before(oldEdited.Time)):
+		m.Content = oldContent.String
+		editedAt := oldEdited.Time
+		m.EditedAt = &editedAt
+	}
+
+	if _, err := tx.ExecContext(ctx,
 		`INSERT OR REPLACE INTO messages
 		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length,
-		 quoted_message_id, quoted_sender, quoted_text, is_forwarded)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 quoted_message_id, quoted_sender, quoted_text, is_forwarded, edited_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.ChatJID, m.Sender, m.Content, dbTime(m.Timestamp), m.IsFromMe,
 		m.MediaType, m.Filename, m.URL, m.DirectPath, mediaKey, fileSHA256, fileEncSHA256, fileLength,
-		m.QuotedMessageID, m.QuotedSender, m.QuotedText, m.IsForwarded,
-	)
-	return err
+		m.QuotedMessageID, m.QuotedSender, m.QuotedText, m.IsForwarded, nullableDBTime(m.EditedAt),
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // StoreMediaInfo updates the media columns of an existing message row.
@@ -360,6 +400,8 @@ CREATE TABLE IF NOT EXISTS messages (
 	quoted_sender TEXT,
 	quoted_text TEXT,
 	is_forwarded BOOLEAN DEFAULT 0,
+	edited_at TIMESTAMP,
+	revoked_at TIMESTAMP,
 	PRIMARY KEY (id, chat_jid),
 	FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 );
@@ -424,4 +466,6 @@ var addedMessageColumns = []struct{ name, def string }{
 	{"quoted_sender", "TEXT"},
 	{"quoted_text", "TEXT"},
 	{"is_forwarded", "BOOLEAN DEFAULT 0"},
+	{"edited_at", "TIMESTAMP"},
+	{"revoked_at", "TIMESTAMP"},
 }

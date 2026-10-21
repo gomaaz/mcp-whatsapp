@@ -191,6 +191,13 @@ func (c *Client) handleMessage(msg *events.Message) {
 		return
 	}
 
+	// Edit or delete-for-everyone of an earlier message: update that row
+	// instead of storing the protocol message itself.
+	if pm := msg.Message.GetProtocolMessage(); isChangeProtocol(pm) {
+		c.handleLiveChange(msg, nm, pm)
+		return
+	}
+
 	// Poll creation — store a "[poll] <question>" row for readability and
 	// cache the option names so we can decode vote SHA-256 hashes later.
 	var pollOptions []string
@@ -250,6 +257,11 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 	}
 
 	for _, conversation := range historySync.Data.Conversations {
+		// Revokes are applied after the conversation's messages are stored:
+		// the payload lists newest first, so a revoke usually comes before
+		// the message it deletes.
+		var revokes []store.MessageChange
+
 		if conversation.ID == nil {
 			continue
 		}
@@ -309,6 +321,11 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 				hm.id, timestamp, hm.message,
 			)
 
+			if target := historyRevokeTarget(msg.Message, hm); target != "" {
+				revokes = append(revokes, historyChange(chatJID, target, nm, hm))
+				continue
+			}
+
 			c.log.Infof("Message content: %s, Media Type: %s", c.redactor.Body(nm.msg.Content), nm.msg.MediaType)
 			if nm.msg.Content == "" && nm.msg.MediaType == "" {
 				continue
@@ -318,7 +335,11 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 			// conversation header — avoids re-resolving per message.
 			nm.msg.ChatJID = chatJID
 
-			if err := c.store.StoreMessage(ctx, nm.msg, nm.mediaKey, nm.fileSHA256, nm.fileEncSHA256, nm.fileLength); err != nil {
+			if hm.edited {
+				if !c.storeHistoryEdit(ctx, nm, hm) {
+					continue
+				}
+			} else if err := c.store.StoreMessage(ctx, nm.msg, nm.mediaKey, nm.fileSHA256, nm.fileEncSHA256, nm.fileLength); err != nil {
 				c.log.Warnf("Failed to store history message: %v", err)
 				continue
 			}
@@ -330,6 +351,10 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 				c.log.Infof("Stored message: [%s] %s -> %s: %s",
 					timestamp.Format("2006-01-02 15:04:05"), c.redactor.JID(nm.msg.Sender), c.redactor.JID(chatJID), c.redactor.Body(nm.msg.Content))
 			}
+		}
+
+		for _, ch := range revokes {
+			c.applyRevoke(ctx, ch)
 		}
 	}
 
@@ -345,6 +370,9 @@ type historyMessage struct {
 	id           string
 	timestamp    time.Time
 	message      *waProto.Message
+	// edited is set when the payload was an edit: id is then the edited
+	// message's ID and message its new content.
+	edited bool
 }
 
 // parseHistoryMessage reads one history-sync message through whatsmeow's
@@ -366,6 +394,9 @@ func (c *Client) parseHistoryMessage(chat types.JID, ownID string, webMsg *waWeb
 		id:           evt.Info.ID,
 		timestamp:    evt.Info.Timestamp,
 		message:      evt.Message,
+		// ParseWebMessage has already swapped in the edited message's ID
+		// and content.
+		edited: unwrapHistoryPayload(webMsg).GetProtocolMessage().GetType() == waProto.ProtocolMessage_MESSAGE_EDIT,
 	}
 	// ParseWebMessage names our own LID as sender in @lid chats, which the
 	// LID map may not resolve. Keep our own messages under our phone number.
@@ -378,14 +409,20 @@ func (c *Client) parseHistoryMessage(chat types.JID, ownID string, webMsg *waWeb
 
 // historyMessageFromKey takes sender, direction and ID straight from the
 // message key. The payload is still unwrapped so the text and media of
-// wrapped messages survive.
+// wrapped messages survive, and an edit is turned into the edited message's
+// ID and new content, as ParseWebMessage does.
 func historyMessageFromKey(chat types.JID, ownID string, webMsg *waWeb.WebMessageInfo) historyMessage {
 	hm := historyMessage{
 		rawSenderJID: chat.String(),
 		senderUser:   chat.User,
 		id:           webMsg.GetKey().GetID(),
 		timestamp:    time.Unix(int64(webMsg.GetMessageTimestamp()), 0),
-		message:      (&events.Message{RawMessage: webMsg.GetMessage()}).UnwrapRaw().Message,
+		message:      unwrapHistoryPayload(webMsg),
+	}
+	if pm := hm.message.GetProtocolMessage(); pm.GetType() == waProto.ProtocolMessage_MESSAGE_EDIT {
+		hm.id = pm.GetKey().GetID()
+		hm.message = pm.GetEditedMessage()
+		hm.edited = true
 	}
 	if key := webMsg.GetKey(); key != nil {
 		hm.isFromMe = key.GetFromMe()
@@ -398,6 +435,12 @@ func historyMessageFromKey(chat types.JID, ownID string, webMsg *waWeb.WebMessag
 		}
 	}
 	return hm
+}
+
+// unwrapHistoryPayload returns the message payload of a history-sync message
+// with ephemeral, view-once, device-sent and similar wrappers removed.
+func unwrapHistoryPayload(webMsg *waWeb.WebMessageInfo) *waProto.Message {
+	return (&events.Message{RawMessage: webMsg.GetMessage()}).UnwrapRaw().Message
 }
 
 // GetChatName determines the appropriate name for a chat. It checks the

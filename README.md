@@ -90,6 +90,7 @@ Paths outside the root, including symlinks that resolve outside it, are rejected
 - `WHATSAPP_MCP_MEDIA_ROOT`: the file allowlist root above.
 - `WHATSAPP_MCP_DEBUG=1` or `-debug`: verbose logs (see [Debug logging](#debug-logging)).
 - `-read-only` (global, before the command) or `WHATSAPP_MCP_READ_ONLY=1`: register only the 15 tools without outbound effect (`search_contacts`, `list_messages`, `list_chats`, `get_chat`, `get_message_context`, `download_media`, `request_sync`, `get_status`, `pairing_status`, `list_groups`, `get_group_info`, `get_blocklist`, `get_privacy_settings`, `get_poll_results`, `is_on_whatsapp`). Nothing that sends, edits, deletes, sends read receipts or changes groups and privacy is reachable, whatever the client calls. `get_group_invite_link` is left out because it can reset the link. An explicit flag wins over the env var, e.g. `-read-only=false`.
+- `-keep-revoked` (global, before the command) or `WHATSAPP_MCP_KEEP_REVOKED=1`: keep the text of messages their sender deleted for everyone. By default the daemon blanks the stored text and media keys of such a message and shows it as `[deleted by sender]`; with this switch the line keeps the text after the marker. Either way `revoked_at` is recorded. An explicit flag wins over the env var.
 
 ## Running the daemon
 
@@ -130,6 +131,8 @@ internal/store/         SQLite cache, LID resolution, query layer
 Data lives under `./store/` (`-store DIR`): `messages.db` (message cache), `whatsapp.db` (whatsmeow session) and `.lock`. Query tools read SQLite; send and action tools call whatsmeow; incoming events are written to SQLite by a goroutine in the same process.
 
 All times are UTC. `messages.db` stores them as `2026-10-20 09:27:49+00:00`, `list_messages` prints them as `2026-10-20T09:27:49Z`, and JSON results use RFC 3339 with `Z`. Older builds stored the local offset of the machine; the first start after an upgrade rewrites those rows to UTC once and records that in `PRAGMA user_version`.
+
+Edits and deletes for everyone update the cached message instead of being stored as messages of their own. An edit replaces the text and sets `edited_at`; a delete sets `revoked_at` and, unless `-keep-revoked` is set, blanks the text and media keys. `list_messages` marks such lines `[edited]` or `[deleted by sender]`, and `get_message_context` returns both fields. A change is applied only when it comes from the message's author (or one of your own devices for your own messages); a group admin deleting someone else's message is ignored.
 
 ## Tools
 

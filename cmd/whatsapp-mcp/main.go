@@ -37,6 +37,10 @@ Global flags (before the command):
   -read-only   Register only tools without outbound effect: no sending, editing,
                deleting, read receipts or group/privacy changes
                (env WHATSAPP_MCP_READ_ONLY=1; the flag wins when both are set)
+  -keep-revoked
+               Keep the text of messages their sender deleted for everyone;
+               by default it is blanked and the message shows as deleted
+               (env WHATSAPP_MCP_KEEP_REVOKED=1; the flag wins when both are set)
   -version     Print version and exit
 
 Serve-specific flags (after 'serve'):
@@ -62,27 +66,26 @@ func main() {
 	}
 
 	var (
-		storeDir string
-		debug    bool
-		readOnly bool
+		storeDir    string
+		debug       bool
+		readOnly    bool
+		keepRevoked bool
 	)
 	fs := flag.NewFlagSet("whatsapp-mcp", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.StringVar(&storeDir, "store", "./store", "directory holding messages.db and whatsapp.db")
 	fs.BoolVar(&debug, "debug", false, "show full JIDs and message bodies in logs (default: redacted)")
 	fs.BoolVar(&readOnly, "read-only", false, "register only tools without outbound effect (env WHATSAPP_MCP_READ_ONLY=1)")
+	fs.BoolVar(&keepRevoked, "keep-revoked", false, "keep the text of messages deleted by their sender (env WHATSAPP_MCP_KEEP_REVOKED=1)")
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		os.Exit(2)
 	}
-	readOnlySet := false
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "read-only" {
-			readOnlySet = true
-		}
-	})
-	readOnly = resolveReadOnly(readOnlySet, readOnly, os.Getenv("WHATSAPP_MCP_READ_ONLY"))
+	set := make(map[string]bool)
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	readOnly = flagOrEnv(set["read-only"], readOnly, os.Getenv("WHATSAPP_MCP_READ_ONLY"))
+	keepRevoked = flagOrEnv(set["keep-revoked"], keepRevoked, os.Getenv("WHATSAPP_MCP_KEEP_REVOKED"))
 	args := fs.Args()
 	if len(args) == 0 {
 		fmt.Fprint(os.Stderr, usage)
@@ -100,7 +103,7 @@ func main() {
 	case "login":
 		code = runLogin(storeDir, redactor, rest)
 	case "serve":
-		code = runServe(storeDir, redactor, readOnly, rest)
+		code = runServe(storeDir, redactor, readOnly, keepRevoked, rest)
 	case "smoke":
 		code = runSmoke(storeDir, redactor, rest)
 	case "help", "-h", "--help":
@@ -113,10 +116,11 @@ func main() {
 	os.Exit(code)
 }
 
-// resolveReadOnly applies the -read-only / WHATSAPP_MCP_READ_ONLY precedence:
-// an explicitly passed flag (true or false) wins, otherwise the env var turns
-// read-only mode on when set to "1".
-func resolveReadOnly(flagSet, flagValue bool, env string) bool {
+// flagOrEnv applies the precedence shared by the boolean global switches
+// (-read-only / WHATSAPP_MCP_READ_ONLY, -keep-revoked /
+// WHATSAPP_MCP_KEEP_REVOKED): an explicitly passed flag (true or false) wins,
+// otherwise the env var turns the switch on when set to "1".
+func flagOrEnv(flagSet, flagValue bool, env string) bool {
 	if flagSet {
 		return flagValue
 	}

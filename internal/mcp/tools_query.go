@@ -75,7 +75,7 @@ var listMessagesMediaTypes = []string{"image", "video", "audio", "document", sto
 
 func (s *Server) registerListMessages() {
 	tool := mcp.NewTool("list_messages",
-		mcp.WithDescription(offlineSafePrefix+"Search and page through cached WhatsApp messages, optionally filtering by chat, sender, direction, media type, time range, and substring; can include surrounding context messages. Read-only; no side effects. Use get_message_context to expand around a single known message ID, or request_sync to backfill missing history. Returns a human-readable formatted text block, one line per message, each starting with its UTC time (RFC 3339, `Z` suffix) and tagged with its `message_id` and `chat_jid`; replies show `(reply to <message_id> from <sender>: \"<quoted text>\")` and forwarded messages `[forwarded]`."),
+		mcp.WithDescription(offlineSafePrefix+"Search and page through cached WhatsApp messages, optionally filtering by chat, sender, direction, media type, time range, and substring; can include surrounding context messages. Read-only; no side effects. Use get_message_context to expand around a single known message ID, or request_sync to backfill missing history. Returns a human-readable formatted text block, one line per message, each starting with its UTC time (RFC 3339, `Z` suffix) and tagged with its `message_id` and `chat_jid`; replies show `(reply to <message_id> from <sender>: \"<quoted text>\")`, forwarded messages `[forwarded]`, edited messages `[edited]` and messages their sender deleted for everyone `[deleted by sender]`."),
 		mcp.WithString("after", mcp.Description("keep messages at or after this time (inclusive); "+timeFilterDesc)),
 		mcp.WithString("before", mcp.Description("keep messages strictly before this time (exclusive), so `before=2026-10-21` ends with 20 October UTC; "+timeFilterDesc)),
 		mcp.WithString("sender_phone_number", mcp.Description("filter to messages sent by this phone or JID ("+jidDesc+")")),
@@ -223,7 +223,7 @@ type getMessageContextArgs struct {
 
 func (s *Server) registerGetMessageContext() {
 	tool := mcp.NewTool("get_message_context",
-		mcp.WithDescription(offlineSafePrefix+"Fetch a specific cached message and the surrounding messages in its chat. Read-only; no side effects. Use list_messages for searching across many chats. Returns a JSON object with the target message and arrays of messages before and after it; replies carry `quoted_message_id`, `quoted_sender`, `quoted_text` and `quoted_from_me`, forwarded messages `is_forwarded`."),
+		mcp.WithDescription(offlineSafePrefix+"Fetch a specific cached message and the surrounding messages in its chat. Read-only; no side effects. Use list_messages for searching across many chats. Returns a JSON object with the target message and arrays of messages before and after it; replies carry `quoted_message_id`, `quoted_sender`, `quoted_text` and `quoted_from_me`, forwarded messages `is_forwarded`, edited messages `edited_at` and messages their sender deleted for everyone `revoked_at`."),
 		mcp.WithString("message_id", mcp.Required(), mcp.Description("WhatsApp message ID of the target message (use `message_id` from list_messages)")),
 		mcp.WithNumber("before", mcp.DefaultNumber(5), mcp.Description("messages to fetch before the target (default 5; non-positive values fall back to the default)")),
 		mcp.WithNumber("after", mcp.DefaultNumber(5), mcp.Description("messages to fetch after the target (default 5; non-positive values fall back to the default)")),

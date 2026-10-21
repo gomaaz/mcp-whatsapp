@@ -120,13 +120,13 @@ func TestListMessages_RejectsUnknownMediaType(t *testing.T) {
 	}
 	req := mcp.CallToolRequest{}
 	req.Params.Name = "list_messages"
-	req.Params.Arguments = map[string]any{"media_type": "sticker"}
+	req.Params.Arguments = map[string]any{"media_type": "gif"}
 	res, err := tool.Handler(context.Background(), req)
 	if err != nil {
 		t.Fatalf("list_messages handler: %v", err)
 	}
 	if !res.IsError {
-		t.Fatalf("expected tool error for media_type=sticker, got %+v", res)
+		t.Fatalf("expected tool error for media_type=gif, got %+v", res)
 	}
 	text, ok := mcp.AsTextContent(res.Content[0])
 	if !ok || !strings.Contains(text.Text, "invalid 'media_type'") {

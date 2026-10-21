@@ -138,6 +138,8 @@ All times are UTC. `messages.db` stores them as `2026-10-20 09:27:49+00:00`, `li
 
 Edits and deletes for everyone update the cached message instead of being stored as messages of their own. An edit replaces the text and sets `edited_at`; an edit older than the one already stored is ignored, so a history sync cannot roll the text back. A delete sets `revoked_at` and, unless `-keep-revoked` is set, blanks the text and media keys, and also drops the copy of the text that replies to it carry. `list_messages` marks such lines `[edited]` or `[deleted by sender]`, and `get_message_context` returns both fields. A reply to a deleted message shows `[deleted by sender]` as its quoted text (followed by the media marker, or by the kept text with `-keep-revoked`). A change is applied only when it comes from the message's author (or one of your own devices for your own messages); a group admin deleting someone else's message is ignored.
 
+Message types without text of their own are stored with a readable line instead of being dropped: `[location] name, address (lat,lon) https://maps.google.com/?q=lat,lon`, `[live location] …`, `[contact] Name, TEL …` (read from the vCard) and `[contacts: n] names`. Stickers are stored as media type `sticker` and video notes as `video`; `download_media` fetches both. A message this device could not decrypt is stored as `[message could not be decrypted - check the phone]`; when WhatsApp's automatic retry succeeds, the real message replaces it. Reactions are kept in a table of their own, so they never show up as a chat's last message or as a message in `list_unanswered`. `list_messages` ends a reacted-to line with `[reactions: 👍 Name, ❤️ Me]`, and `get_message_context` returns them as `reactions`. Removing a reaction removes it from the cache as well.
+
 ## Tools
 
 44 tools, grouped by purpose.
@@ -148,10 +150,10 @@ Edits and deletes for everyone update the cached message instead of being stored
 |---|---|
 | `search_contacts` | Substring search across cached contact names and phone numbers |
 | `list_messages` | Query + filter messages; returns formatted text with context windows. `after` (inclusive) and `before` (exclusive) take RFC 3339 with `Z` or an offset, a time without offset (read as UTC) or a bare `YYYY-MM-DD` (00:00 UTC) |
-| `list_unanswered` | Chats where someone wrote and is still waiting for your reply: incoming messages after your own last message and after `since` (default 7 days ago, same time formats as `list_messages`). Longest wait first, with count, first/last waiting time and the newest waiting message. Groups only with `include_groups: true`; status updates, broadcast lists, channels and deleted messages are left out |
+| `list_unanswered` | Chats where someone wrote and is still waiting for your reply: incoming messages after your own last message and after `since` (default 7 days ago, same time formats as `list_messages`). Longest wait first, with count, first/last waiting time and the newest waiting message. Every own message counts as a reply, stickers, locations and contact cards included, and so does your own emoji reaction to an incoming message: it answers that message and everything before it. Groups only with `include_groups: true`; status updates, broadcast lists, channels and deleted messages are left out |
 | `list_chats` | List chats with last-message preview; sort by activity or name |
 | `get_chat` | Chat metadata by JID |
-| `get_message_context` | Before/after window around a specific message |
+| `get_message_context` | Before/after window around a specific message, with each message's emoji reactions |
 | `download_media` | Download persisted media to a local path |
 | `transcribe_media` | Transcribe a voice note or other audio message locally with whisper.cpp (see `WHATSAPP_MCP_WHISPER_*` above). The audio is fetched like `download_media`, nothing is sent to the chat. The transcript is cached: repeat calls return it straight away, `list_messages` shows it on the line (`[voice note, 45 s] transcript: "…"`) and its `query` searches it. Deleting a message for everyone also deletes its transcript unless `-keep-revoked` is set |
 | `request_sync` | Ask WhatsApp to backfill history for a chat |

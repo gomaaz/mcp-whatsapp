@@ -56,7 +56,7 @@ func (c *Client) handleEvent(evt interface{}) {
 	case *events.Receipt:
 		c.log.Debugf("Receipt for %d messages: %s", len(v.MessageIDs), v.Type)
 	case *events.UndecryptableMessage:
-		c.log.Warnf("Undecryptable message from %s", v.Info.Sender)
+		c.handleUndecryptable(v)
 	default:
 		c.log.Debugf("Unhandled event type: %T", v)
 	}
@@ -174,6 +174,20 @@ func (c *Client) handleMessage(msg *events.Message) {
 		msg.Info.Timestamp,
 		msg.Message,
 	)
+
+	// The message decrypted: drop the placeholder an earlier failed delivery
+	// of it may have left. A message stored below replaces it anyway, but one
+	// that is not stored as a row (reaction, poll vote, edit) would not.
+	if err := c.store.DeleteUndecryptable(context.Background(), nm.chatJID, msg.Info.ID); err != nil {
+		c.log.Warnf("Failed to drop undecryptable placeholder: %v", err)
+	}
+
+	// Reaction — kept in its own table, never as a message row, and it does
+	// not move the chat's last activity.
+	if rm := msg.Message.GetReactionMessage(); rm != nil {
+		c.handleLiveReaction(msg, nm, rm)
+		return
+	}
 
 	name := c.GetChatName(msg.Info.Chat, nm.chatJID, nil, nm.msg.Sender)
 
@@ -321,11 +335,19 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 			hm := c.parseHistoryMessage(jid, ownID, msg.Message)
 			timestamp := hm.timestamp
 
+			// Reactions to this message travel with it in history.
+			c.storeHistoryReactions(ctx, chatJID, jid, ownID, msg.Message)
+
 			nm := c.normalizeIncomingMessage(
 				rawChatJID, hm.rawSenderJID, hm.senderUser,
 				isGroup, hm.isFromMe, ownID,
 				hm.id, timestamp, hm.message,
 			)
+
+			if rm := hm.message.GetReactionMessage(); rm != nil {
+				c.storeReaction(ctx, reactionUpdate(chatJID, nm, rm, hm.timestamp, c.ownReactionSender(ownID)))
+				continue
+			}
 
 			if target := historyRevokeTarget(msg.Message, hm); target != "" {
 				revokes = append(revokes, historyChange(chatJID, target, nm, hm))
@@ -545,6 +567,9 @@ func (c *Client) ownUser() string {
 // extractTextContent returns the plain-text body of a Message, if any.
 // For image, video and document messages it returns the caption, since
 // WhatsApp carries the accompanying text there instead of in Conversation.
+// Locations and contact cards have no text of their own; they get a readable
+// placeholder ("[location] …", "[contact] …", see placeholderContent) so they
+// are stored instead of being dropped as empty.
 func extractTextContent(msg *waProto.Message) string {
 	if msg == nil {
 		return ""
@@ -564,12 +589,16 @@ func extractTextContent(msg *waProto.Message) string {
 	if doc := msg.GetDocumentMessage(); doc != nil {
 		return doc.GetCaption()
 	}
-	return ""
+	if ptv := msg.GetPtvMessage(); ptv != nil {
+		return ptv.GetCaption()
+	}
+	return placeholderContent(msg)
 }
 
 // contextInfoOf returns the ContextInfo of the message types that can quote
 // another message or carry the forwarded flag: extended text, image, video,
-// document, audio and sticker. Plain Conversation messages have none.
+// video note, document, audio, sticker, location, live location and contact
+// cards. Plain Conversation messages have none.
 func contextInfoOf(msg *waProto.Message) *waProto.ContextInfo {
 	if msg == nil {
 		return nil
@@ -587,6 +616,16 @@ func contextInfoOf(msg *waProto.Message) *waProto.ContextInfo {
 		return msg.GetAudioMessage().GetContextInfo()
 	case msg.GetStickerMessage() != nil:
 		return msg.GetStickerMessage().GetContextInfo()
+	case msg.GetPtvMessage() != nil:
+		return msg.GetPtvMessage().GetContextInfo()
+	case msg.GetLocationMessage() != nil:
+		return msg.GetLocationMessage().GetContextInfo()
+	case msg.GetLiveLocationMessage() != nil:
+		return msg.GetLiveLocationMessage().GetContextInfo()
+	case msg.GetContactMessage() != nil:
+		return msg.GetContactMessage().GetContextInfo()
+	case msg.GetContactsArrayMessage() != nil:
+		return msg.GetContactsArrayMessage().GetContextInfo()
 	}
 	return nil
 }
@@ -602,7 +641,7 @@ func quotedSnippet(quoted *waProto.Message) string {
 	switch {
 	case quoted.GetImageMessage() != nil:
 		mediaType = "image"
-	case quoted.GetVideoMessage() != nil:
+	case quoted.GetVideoMessage() != nil, quoted.GetPtvMessage() != nil:
 		mediaType = "video"
 	case quoted.GetAudioMessage() != nil:
 		mediaType = "audio"
@@ -633,6 +672,8 @@ func (c *Client) quotedSenderUser(participant string) string {
 // directPath is captured verbatim from the media protobuf and includes the
 // signed `?ccb=&oh=&oe=&_nc_sid=` CDN auth query, so the download path can
 // hand it straight to whatsmeow without any URL string manipulation.
+// Stickers are stored as media type "sticker" (a WebP image), video notes
+// (round PTV videos) as "video"; both download like any other media.
 func extractMediaInfo(msg *waProto.Message) (mediaType, filename, url, directPath string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) {
 	if msg == nil {
 		return "", "", "", "", nil, nil, nil, 0
@@ -658,6 +699,16 @@ func extractMediaInfo(msg *waProto.Message) (mediaType, filename, url, directPat
 		return "document", fname,
 			doc.GetURL(), doc.GetDirectPath(),
 			doc.GetMediaKey(), doc.GetFileSHA256(), doc.GetFileEncSHA256(), doc.GetFileLength()
+	}
+	if ptv := msg.GetPtvMessage(); ptv != nil {
+		return "video", generatedMediaFilename("video", ptv.GetFileSHA256(), ".mp4"),
+			ptv.GetURL(), ptv.GetDirectPath(),
+			ptv.GetMediaKey(), ptv.GetFileSHA256(), ptv.GetFileEncSHA256(), ptv.GetFileLength()
+	}
+	if st := msg.GetStickerMessage(); st != nil {
+		return "sticker", generatedMediaFilename("sticker", st.GetFileSHA256(), ".webp"),
+			st.GetURL(), st.GetDirectPath(),
+			st.GetMediaKey(), st.GetFileSHA256(), st.GetFileEncSHA256(), st.GetFileLength()
 	}
 
 	return "", "", "", "", nil, nil, nil, 0

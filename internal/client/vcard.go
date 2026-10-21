@@ -52,6 +52,104 @@ func digitsOnly(s string) string {
 	}, s)
 }
 
+// parseVCard reads the name and phone numbers out of a received vCard (2.1,
+// 3.0 or 4.0). name is the FN value, or "Given Family" from N when FN is
+// missing. tels lists the TEL values in card order without duplicates; a
+// TEL with an empty value falls back to "+<waid>". Folded lines are joined
+// and group prefixes ("item1.TEL") ignored; anything it cannot read is
+// skipped.
+func parseVCard(card string) (name string, tels []string) {
+	var structured string
+	seen := make(map[string]bool)
+	for _, line := range unfoldVCard(card) {
+		head, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		prop, params, _ := strings.Cut(head, ";")
+		if i := strings.LastIndex(prop, "."); i >= 0 {
+			prop = prop[i+1:]
+		}
+		switch strings.ToUpper(strings.TrimSpace(prop)) {
+		case "FN":
+			if name == "" {
+				name = strings.Join(strings.Fields(unescapeVCardText(value)), " ")
+			}
+		case "N":
+			if structured == "" {
+				fields := strings.Split(value, ";")
+				var parts []string
+				// N is Family;Given;Additional;Prefix;Suffix: print Given first.
+				for _, i := range []int{1, 0} {
+					if i < len(fields) {
+						if f := strings.TrimSpace(unescapeVCardText(fields[i])); f != "" {
+							parts = append(parts, f)
+						}
+					}
+				}
+				structured = strings.Join(strings.Fields(strings.Join(parts, " ")), " ")
+			}
+		case "TEL":
+			tel := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(value), "tel:"))
+			if tel == "" {
+				tel = waidParam(params)
+			}
+			if tel != "" && !seen[tel] {
+				seen[tel] = true
+				tels = append(tels, tel)
+			}
+		}
+	}
+	if name == "" {
+		name = structured
+	}
+	return name, tels
+}
+
+// unfoldVCard splits a vCard into logical lines, joining folded
+// continuation lines (starting with a space or tab) onto the line before.
+func unfoldVCard(card string) []string {
+	var lines []string
+	for _, raw := range strings.Split(strings.ReplaceAll(card, "\r\n", "\n"), "\n") {
+		raw = strings.TrimRight(raw, "\r")
+		if (strings.HasPrefix(raw, " ") || strings.HasPrefix(raw, "\t")) && len(lines) > 0 {
+			lines[len(lines)-1] += raw[1:]
+			continue
+		}
+		if raw != "" {
+			lines = append(lines, raw)
+		}
+	}
+	return lines
+}
+
+// waidParam returns "+<digits>" for a TEL line's waid=<digits> parameter,
+// or "" when there is none.
+func waidParam(params string) string {
+	for _, p := range strings.Split(params, ";") {
+		k, v, ok := strings.Cut(p, "=")
+		if ok && strings.EqualFold(strings.TrimSpace(k), "waid") {
+			if d := digitsOnly(v); d != "" {
+				return "+" + d
+			}
+		}
+	}
+	return ""
+}
+
+// unescapeVCardText reverses escapeVCardText, except that an escaped line
+// break becomes a space so the value stays on one line.
+func unescapeVCardText(s string) string {
+	replacer := strings.NewReplacer(
+		"\\\\", "\\",
+		"\\n", " ",
+		"\\N", " ",
+		"\\,", ",",
+		"\\;", ";",
+	)
+	return replacer.Replace(s)
+}
+
 // escapeVCardText applies the RFC 6350 text-value escaping rules for the
 // characters that are significant in the vCard grammar.
 func escapeVCardText(s string) string {

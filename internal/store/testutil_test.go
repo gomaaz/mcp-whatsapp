@@ -46,6 +46,11 @@ func openTestStore(t *testing.T) *Store {
 		db.Close()
 		t.Fatalf("apply seed: %v", err)
 	}
+	// Tables added by migrateSchema rather than by the seed's schema copy.
+	if err := createReactionsTable(db); err != nil {
+		db.Close()
+		t.Fatalf("create reactions table: %v", err)
+	}
 
 	// A second handle to the same shared-cache DB, playing the role of
 	// whatsmeowDB. LID lookups hit the same underlying tables.

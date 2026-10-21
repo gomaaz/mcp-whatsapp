@@ -45,7 +45,8 @@ type ListMessagesParams struct {
 	// false only incoming ones.
 	FromMe *bool
 	// MediaType keeps only messages with this media type ("image", "video",
-	// "audio", "document"); MediaTypeNone keeps only text messages.
+	// "audio", "document", "sticker"); MediaTypeNone keeps only text
+	// messages.
 	MediaType      string
 	ExcludeGroups  bool
 	Limit          int
@@ -141,6 +142,9 @@ func (s *Store) ListMessages(ctx context.Context, params ListMessagesParams) ([]
 	}
 
 	if !params.IncludeContext || len(result) == 0 {
+		if err := s.attachReactions(ctx, result); err != nil {
+			return nil, err
+		}
 		return result, nil
 	}
 
@@ -184,6 +188,9 @@ func (s *Store) ListMessages(ctx context.Context, params ListMessagesParams) ([]
 		}
 		return a.rowID < b.rowID
 	})
+	if err := s.attachReactions(ctx, expanded); err != nil {
+		return nil, err
+	}
 	return expanded, nil
 }
 
@@ -330,13 +337,24 @@ func (s *Store) SearchContacts(ctx context.Context, query string) ([]Contact, er
 }
 
 // GetMessageContext returns the target message together with before/after
-// windows from the same chat.
+// windows from the same chat, each with its current reactions.
 func (s *Store) GetMessageContext(ctx context.Context, messageID string, before, after int) (*MessageContext, error) {
 	mc, err := s.messageContext(ctx, "messages.id = ?", messageID, before, after)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("message with ID %s not found", messageID)
 	}
-	return mc, err
+	if err != nil {
+		return nil, err
+	}
+	all := make([]Message, 0, len(mc.Before)+1+len(mc.After))
+	all = append(append(append(all, mc.Before...), mc.Message), mc.After...)
+	if err := s.attachReactions(ctx, all); err != nil {
+		return nil, err
+	}
+	copy(mc.Before, all[:len(mc.Before)])
+	mc.Message = all[len(mc.Before)]
+	copy(mc.After, all[len(mc.Before)+1:])
+	return mc, nil
 }
 
 // messageContext loads the message selected by where (a fixed predicate on

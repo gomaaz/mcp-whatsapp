@@ -84,6 +84,10 @@ type Message struct {
 	// Transcript is the cached local transcription of an audio message
 	// (see transcribe_media); empty until one was made.
 	Transcript string `json:"transcript,omitempty"`
+	// Reactions are the current emoji reactions to the message, oldest
+	// first. Filled on read by list_messages and get_message_context; not a
+	// messages column (see the reactions table).
+	Reactions []Reaction `json:"reactions,omitempty"`
 	// rowID is the SQLite rowid of the cached row, set by the list/context
 	// queries. It breaks ties between messages that share a timestamp
 	// (a screenshot and its follow-up text sent in the same second).
@@ -302,6 +306,42 @@ func (s *Store) StoreMessage(ctx context.Context, m Message, mediaKey, fileSHA25
 	return tx.Commit()
 }
 
+// UndecryptablePlaceholder is the text stored for a message this device could
+// not decrypt. WhatsApp asks the sender's phone to send it again; when the
+// retry decrypts, the real message replaces the placeholder row.
+const UndecryptablePlaceholder = "[message could not be decrypted - check the phone]"
+
+// StoreUndecryptable stores m with UndecryptablePlaceholder as its text,
+// unless a row with the same ID already exists in the chat: a message that
+// did decrypt (from an earlier delivery or another retry) is never replaced
+// by the placeholder. The chat row must exist (foreign key).
+func (s *Store) StoreUndecryptable(ctx context.Context, m Message) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO messages (id, chat_jid, sender, content, timestamp, is_from_me, media_type)
+		VALUES (?, ?, ?, ?, ?, ?, '')`,
+		m.ID, m.ChatJID, m.Sender, UndecryptablePlaceholder, dbTime(m.Timestamp), m.IsFromMe,
+	)
+	if err != nil {
+		return fmt.Errorf("store undecryptable placeholder: %w", err)
+	}
+	return nil
+}
+
+// DeleteUndecryptable removes the placeholder row of a message that has now
+// been decrypted. Called for every decrypted live message, so that one which
+// is not stored as a row of its own (a reaction, a poll vote, an edit) does
+// not leave the placeholder behind. Any other row is left alone.
+func (s *Store) DeleteUndecryptable(ctx context.Context, chatJID, id string) error {
+	_, err := s.db.ExecContext(ctx,
+		"DELETE FROM messages WHERE id = ? AND chat_jid = ? AND content = ? AND COALESCE(media_type, '') = ''",
+		id, chatJID, UndecryptablePlaceholder,
+	)
+	if err != nil {
+		return fmt.Errorf("delete undecryptable placeholder: %w", err)
+	}
+	return nil
+}
+
 // StoreMediaInfo updates the media columns of an existing message row.
 func (s *Store) StoreMediaInfo(id, chatJID, url, directPath string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
 	_, err := s.db.Exec(
@@ -503,6 +543,9 @@ func migrateSchema(db *sql.DB) error {
 		if _, err := db.Exec("ALTER TABLE messages ADD COLUMN " + col.name + " " + col.def); err != nil {
 			return fmt.Errorf("add column %s: %w", col.name, err)
 		}
+	}
+	if err := createReactionsTable(db); err != nil {
+		return err
 	}
 	return normalizeTimestamps(db)
 }

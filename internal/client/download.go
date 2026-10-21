@@ -137,7 +137,8 @@ func (c *Client) Download(ctx context.Context, messageID, chatJID, outputPath st
 
 	var waMediaType whatsmeow.MediaType
 	switch mediaType {
-	case "image":
+	case "image", "sticker":
+		// Stickers are WebP images and use the image media keys.
 		waMediaType = whatsmeow.MediaImage
 	case "video":
 		waMediaType = whatsmeow.MediaVideo

@@ -21,7 +21,8 @@ const revokedMarker = "[deleted by sender]"
 // the same form list_messages accepts for after/before. Messages the sender
 // deleted for everyone are marked "[deleted by sender]", edited ones
 // "[edited]". Audio carries its length ("[voice note, 45 s]") and, once
-// transcribe_media has run, its cached transcript.
+// transcribe_media has run, its cached transcript. Reactions loaded into
+// m.Reactions close the line ("[reactions: 👍 Alice]").
 func (s *Store) FormatMessage(ctx context.Context, m Message, showChatInfo bool) string {
 	var b strings.Builder
 
@@ -77,6 +78,10 @@ func (s *Store) FormatMessage(ctx context.Context, m Message, showChatInfo bool)
 		}
 		b.WriteString("transcript: ")
 		b.WriteString(strconv.Quote(t))
+	}
+	if r := s.formatReactions(ctx, m.Reactions); r != "" {
+		b.WriteString(" ")
+		b.WriteString(r)
 	}
 	b.WriteString("\n")
 

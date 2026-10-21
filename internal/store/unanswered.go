@@ -10,7 +10,8 @@ import (
 
 // UnansweredChat is a chat whose newest incoming messages have no reply from
 // us yet: every incoming message after our last own message (and inside the
-// requested time window) counts as waiting.
+// requested time window) counts as waiting. An own reaction to an incoming
+// message counts as a reply to that message and everything before it.
 type UnansweredChat struct {
 	ChatJID     string `json:"chat_jid"`
 	Name        string `json:"name"`
@@ -22,7 +23,8 @@ type UnansweredChat struct {
 	// newest waiting message.
 	FirstWaitingAt time.Time `json:"first_waiting_at"`
 	LastWaitingAt  time.Time `json:"last_waiting_at"`
-	// LastReplyAt is when we last wrote in the chat; nil if we never did.
+	// LastReplyAt is when we last wrote or reacted in the chat; nil if we
+	// never did.
 	LastReplyAt *time.Time `json:"last_reply_at,omitempty"`
 	// LastMessage is the newest waiting message.
 	LastMessage UnansweredMessage `json:"last_message"`
@@ -48,8 +50,12 @@ const unansweredChatFilter = "messages.chat_jid NOT LIKE '%@broadcast' AND messa
 // ListUnanswered returns the chats in which incoming messages are waiting for
 // a reply: for each chat, last_out is the time of our newest own message, and
 // every incoming message newer than both since and last_out is waiting.
-// Messages deleted for everyone count on neither side, and rows without text
-// or media (signal-only rows) are ignored. Group chats are skipped unless
+// Every own message counts, placeholder rows such as stickers, locations and
+// contact cards included. An own reaction (not a removed one) to a cached
+// message moves last_out up to the time of the message reacted to, so that
+// message and everything before it count as answered, while messages that
+// came after it keep waiting. Messages deleted for everyone count on neither
+// side, and rows without text or media (signal-only rows) are ignored. Group chats are skipped unless
 // includeGroups is set. since is inclusive; a zero since means no lower bound.
 // The result is sorted by the oldest waiting message first, so the longest
 // wait comes first. limit defaults to 20 when <= 0.
@@ -79,14 +85,23 @@ func (s *Store) ListUnanswered(ctx context.Context, since time.Time, includeGrou
 	// comparisons order them correctly. rowid breaks ties between waiting
 	// messages from the same second when picking the newest one.
 	q := `
-		WITH last_out AS (
-			SELECT chat_jid, MAX(timestamp) AS t
+		WITH answered AS (
+			SELECT chat_jid, timestamp AS t, timestamp AS replied
 			FROM messages
 			WHERE is_from_me = 1 AND revoked_at IS NULL
+			UNION ALL
+			SELECT reactions.chat_jid, target.timestamp, reactions.timestamp
+			FROM reactions
+			JOIN messages AS target ON target.chat_jid = reactions.chat_jid AND target.id = reactions.message_id
+			WHERE reactions.is_from_me = 1 AND reactions.emoji <> ''
+		),
+		last_out AS (
+			SELECT chat_jid, MAX(t) AS t, MAX(replied) AS replied
+			FROM answered
 			GROUP BY chat_jid
 		),
 		waiting AS (
-			SELECT messages.rowid AS rid, messages.chat_jid, messages.timestamp AS ts, last_out.t AS last_out,
+			SELECT messages.rowid AS rid, messages.chat_jid, messages.timestamp AS ts, last_out.replied AS last_out,
 				ROW_NUMBER() OVER (PARTITION BY messages.chat_jid ORDER BY messages.timestamp DESC, messages.rowid DESC) AS rn,
 				COUNT(*) OVER (PARTITION BY messages.chat_jid) AS cnt,
 				MIN(messages.timestamp) OVER (PARTITION BY messages.chat_jid) AS first_ts

@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -311,6 +313,8 @@ func TestRemoveMessage_RefusesLinkedDirectory(t *testing.T) {
 	dirLink(t, outside, dir)
 	if _, err := RemoveMessage(store, chatA, "LINKED"); err == nil {
 		t.Error("RemoveMessage followed a linked message directory")
+	} else {
+		mustBePathFree(t, err.Error(), filepath.Join(dir, "linked.pdf"))
 	}
 	mustExist(t, victim)
 
@@ -324,4 +328,111 @@ func TestRemoveMessage_RefusesLinkedDirectory(t *testing.T) {
 		t.Error("RemoveMessage followed a linked chat directory")
 	}
 	mustExist(t, victim2)
+}
+
+// blockDelete makes deleting path fail for the rest of the test: an open
+// handle does that on Windows, a read-only parent directory elsewhere. The
+// test is skipped where that does not stop deletion (running as root).
+func blockDelete(t *testing.T, path string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		f, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { f.Close() })
+		return
+	}
+	dir := filepath.Dir(path)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	probe := filepath.Join(dir, "probe")
+	if err := os.WriteFile(probe, nil, 0o600); err == nil {
+		_ = os.Remove(probe)
+		t.Skip("a read-only directory does not stop deletion here (root?)")
+	}
+}
+
+var digitRun = regexp.MustCompile(`\d{5,}`)
+
+// mustBePathFree fails when msg names any part of a cached file's path:
+// the chat folder (the phone number), the hex message folder or the file
+// name.
+func mustBePathFree(t *testing.T, msg string, paths ...string) {
+	t.Helper()
+	if strings.Contains(msg, "\n") {
+		t.Errorf("error spans several lines: %q", msg)
+	}
+	if digitRun.MatchString(msg) {
+		t.Errorf("error contains a digit run: %q", msg)
+	}
+	for _, p := range paths {
+		for _, part := range []string{filepath.Base(p), filepath.Base(filepath.Dir(p)), filepath.Base(filepath.Dir(filepath.Dir(p)))} {
+			if strings.Contains(msg, part) {
+				t.Errorf("error contains %q: %q", part, msg)
+			}
+		}
+	}
+}
+
+// A file Prune cannot delete (on Windows typically one another program has
+// open) must not put its path into the error: serve logs it, and the path
+// holds the chat's phone number, the message ID and the attachment name.
+func TestPrune_ErrorsCarryNoPaths(t *testing.T) {
+	store := t.TempDir()
+	invoice := cached(t, store, chatA, "3EB0C0FFEE0123456789", "Rechnung_Mueller.pdf")
+	offer := cached(t, store, chatA, "3EB0C0FFEE0123456789", "Angebot_Mueller.pdf")
+	for _, p := range []string{invoice, offer} {
+		writeFile(t, p, oldTime)
+		blockDelete(t, p)
+	}
+
+	rep, err := Prune(store, Options{OlderThan: 24 * time.Hour, Now: testNow})
+	if err == nil {
+		t.Fatalf("Prune = %+v, nil; want an error for the locked files", rep)
+	}
+	if rep.Files != 0 {
+		t.Errorf("Files = %d, want 0", rep.Files)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "2 cache entries failed") || !strings.Contains(msg, "delete file") {
+		t.Errorf("error = %q, want the count and what failed", msg)
+	}
+	if strings.Count(msg, "delete file") != 1 {
+		t.Errorf("error repeats the same reason: %q", msg)
+	}
+	mustBePathFree(t, msg, invoice, offer)
+	mustExist(t, invoice, offer)
+}
+
+func TestRemoveMessage_ErrorsCarryNoPaths(t *testing.T) {
+	store := t.TempDir()
+	invoice := cached(t, store, chatA, "3EB0C0FFEE0123456789", "Rechnung_Mueller.pdf")
+	writeFile(t, invoice, newTime)
+	blockDelete(t, invoice)
+
+	n, err := RemoveMessage(store, chatA, "3EB0C0FFEE0123456789")
+	if err == nil || n != 0 {
+		t.Fatalf("RemoveMessage = %d, %v; want 0 and an error", n, err)
+	}
+	if !strings.Contains(err.Error(), "1 cache entry failed") {
+		t.Errorf("error = %q, want the count", err)
+	}
+	mustBePathFree(t, err.Error(), invoice)
+}
+
+func TestPathFree(t *testing.T) {
+	_, statErr := os.Stat(filepath.Join(t.TempDir(), chatA, "missing.pdf"))
+	got := pathFree("inspect file", statErr)
+	if !errors.Is(got, os.ErrNotExist) {
+		t.Errorf("pathFree lost the underlying error: %v", got)
+	}
+	if strings.Contains(got.Error(), "missing.pdf") || strings.Contains(got.Error(), "447700000001") {
+		t.Errorf("pathFree kept the path: %q", got)
+	}
+	if got := pathFree("delete file", errors.New(`remove C:\store\`+chatA+`\x.pdf: busy`)); got.Error() != "delete file failed" {
+		t.Errorf("unknown error type = %q, want %q", got, "delete file failed")
+	}
 }

@@ -119,13 +119,7 @@ func runServe(storeDir string, redactor *security.Redactor, readOnly, keepRevoke
 		go func() {
 			defer close(done)
 			mediaRetentionLoop(ctx, retentionInterval, func() {
-				rep, err := c.PruneMedia(mediaRetention.d, false)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "warn: media retention: %v\n", err)
-				}
-				if rep.Files > 0 || rep.MessageDirs > 0 {
-					fmt.Fprintf(os.Stderr, "media retention: deleted %d file(s), %s\n", rep.Files, humanBytes(rep.Bytes))
-				}
+				retainMedia(os.Stderr, redactor, mediaRetention.d, c.PruneMedia)
 			})
 		}()
 		// Stop the loop and let a prune in progress finish before the

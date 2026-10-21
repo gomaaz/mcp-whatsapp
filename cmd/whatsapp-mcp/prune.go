@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sealjay/mcp-whatsapp/internal/mediacache"
+	"github.com/sealjay/mcp-whatsapp/internal/security"
 	"github.com/sealjay/mcp-whatsapp/internal/store"
 )
 
@@ -174,6 +175,20 @@ func humanBytes(n int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// retainMedia runs one media-retention pass for serve and writes the outcome
+// to w. mediacache errors carry no paths; the error still goes through the
+// redactor, so no chat JID or phone number reaches the log even if an error
+// with a path slips through.
+func retainMedia(w io.Writer, r *security.Redactor, olderThan time.Duration, prune func(time.Duration, bool) (mediacache.Report, error)) {
+	rep, err := prune(olderThan, false)
+	if err != nil {
+		fmt.Fprintf(w, "warn: media retention: %s\n", r.Line(err.Error()))
+	}
+	if rep.Files > 0 || rep.MessageDirs > 0 {
+		fmt.Fprintf(w, "media retention: deleted %d file(s), %s\n", rep.Files, humanBytes(rep.Bytes))
+	}
 }
 
 // mediaRetentionLoop calls prune once right away and then every interval

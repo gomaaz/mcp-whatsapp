@@ -9,6 +9,11 @@
 // directory and anything else in the store are never entered. Symlinks and
 // junctions are not followed, and every directory is checked to resolve
 // inside the store before anything in it is deleted.
+//
+// Errors from Prune and RemoveMessage carry no paths: chat directories are
+// named after the chat JID (a phone number), message directories after the
+// hex-encoded message ID, and files after the attachment, and these errors
+// end up in the serve log.
 package mediacache
 
 import (
@@ -124,7 +129,7 @@ func Prune(storeDir string, opts Options) (Report, error) {
 		}
 		p.chat(filepath.Join(root, e.Name()))
 	}
-	return rep, errors.Join(p.errs...)
+	return rep, failuresError("prune", p.errs)
 }
 
 type pruner struct {
@@ -144,7 +149,7 @@ func (p *pruner) chat(dir string) {
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		p.errs = append(p.errs, err)
+		p.errs = append(p.errs, pathFree("read chat folder", err))
 		return
 	}
 	left := len(entries)
@@ -170,7 +175,7 @@ func (p *pruner) message(dir string) bool {
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		p.errs = append(p.errs, err)
+		p.errs = append(p.errs, pathFree("read message folder", err))
 		return false
 	}
 	left := len(entries)
@@ -182,7 +187,7 @@ func (p *pruner) message(dir string) bool {
 		info, err := e.Info()
 		if err != nil {
 			if !errors.Is(err, fs.ErrNotExist) {
-				p.errs = append(p.errs, err)
+				p.errs = append(p.errs, pathFree("inspect file", err))
 			}
 			continue
 		}
@@ -191,7 +196,7 @@ func (p *pruner) message(dir string) bool {
 		}
 		if !p.dryRun {
 			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
-				p.errs = append(p.errs, err)
+				p.errs = append(p.errs, pathFree("delete file", err))
 				continue
 			}
 		}
@@ -229,7 +234,7 @@ func (p *pruner) removeDir(dir string) bool {
 		return true
 	}
 	if err := os.Remove(dir); err != nil {
-		p.errs = append(p.errs, err)
+		p.errs = append(p.errs, pathFree("delete empty folder", err))
 		return false
 	}
 	return true
@@ -253,18 +258,18 @@ func RemoveMessage(storeDir, chatJID, messageID string) (int, error) {
 			return 0, nil
 		}
 		if err != nil {
-			return 0, err
+			return 0, pathFree("inspect media cache folder", err)
 		}
 		if info.Mode().Type() != fs.ModeDir {
-			return 0, fmt.Errorf("media cache %q is not a plain directory", d)
+			return 0, errors.New("media cache folder is not a plain directory")
 		}
 		if _, err := security.ResolveWithin(d, storeDir); err != nil {
-			return 0, err
+			return 0, errors.New("media cache folder resolves outside the store or cannot be resolved")
 		}
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return 0, err
+		return 0, pathFree("read message folder", err)
 	}
 	removed, left := 0, len(entries)
 	var errs []error
@@ -273,7 +278,7 @@ func RemoveMessage(storeDir, chatJID, messageID string) (int, error) {
 			continue
 		}
 		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
-			errs = append(errs, err)
+			errs = append(errs, pathFree("delete file", err))
 			continue
 		}
 		removed++
@@ -281,13 +286,77 @@ func RemoveMessage(storeDir, chatJID, messageID string) (int, error) {
 	}
 	if left == 0 {
 		if err := os.Remove(dir); err != nil {
-			errs = append(errs, err)
+			errs = append(errs, pathFree("delete empty folder", err))
 		} else {
 			// Only succeeds when no other message of the chat is cached.
 			_ = os.Remove(chatDir)
 		}
 	}
-	return removed, errors.Join(errs...)
+	return removed, failuresError("remove cached media", errs)
+}
+
+// pathFree reduces a file system error to what went wrong, without the
+// path: "delete file: The process cannot access the file because it is
+// being used by another process." The underlying error stays wrapped, so
+// errors.Is(err, fs.ErrPermission) still works. An error of another type
+// may carry a path in its text and is replaced by "<op> failed".
+func pathFree(op string, err error) error {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return fmt.Errorf("%s: %w", op, pe.Err)
+	}
+	var le *os.LinkError
+	if errors.As(err, &le) {
+		return fmt.Errorf("%s: %w", op, le.Err)
+	}
+	var se *os.SyscallError
+	if errors.As(err, &se) {
+		return fmt.Errorf("%s: %w", op, se.Err)
+	}
+	return fmt.Errorf("%s failed", op)
+}
+
+// failures is the error Prune and RemoveMessage return when entries could
+// not be read or deleted: how many failed and each distinct reason once, on
+// one line.
+type failures struct {
+	op      string
+	count   int
+	reasons []error
+}
+
+func (f *failures) Error() string {
+	msgs := make([]string, len(f.reasons))
+	for i, r := range f.reasons {
+		msgs[i] = r.Error()
+	}
+	return fmt.Sprintf("%s: %d cache entr%s failed: %s", f.op, f.count, plural(f.count, "y", "ies"), strings.Join(msgs, "; "))
+}
+
+func (f *failures) Unwrap() []error { return f.reasons }
+
+// failuresError returns nil for no errors, otherwise a *failures with the
+// distinct reasons of errs.
+func failuresError(op string, errs []error) error {
+	if len(errs) == 0 {
+		return nil
+	}
+	f := &failures{op: op, count: len(errs)}
+	seen := make(map[string]bool)
+	for _, err := range errs {
+		if msg := err.Error(); !seen[msg] {
+			seen[msg] = true
+			f.reasons = append(f.reasons, err)
+		}
+	}
+	return f
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // resolveSkips resolves the skip directories; one that does not exist yet

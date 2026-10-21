@@ -1,10 +1,15 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -236,5 +241,53 @@ func TestDownload_RefusesRevokedMessage(t *testing.T) {
 	revoke(t, s2, true)
 	if dl := c2.Download(context.Background(), "M-RET", retJID, ""); !dl.Success {
 		t.Errorf("keep-revoked: cached media refused: %s", dl.Message)
+	}
+}
+
+// When the cached file of a revoked message cannot be deleted (on Windows
+// typically because another program has it open), the warning names neither
+// the chat's phone number, the message ID folder nor the attachment.
+func TestRemoveMessageMedia_FailureLogsNoPaths(t *testing.T) {
+	c, s, _ := seedDownloadable(t, []byte("x"))
+	var buf bytes.Buffer
+	c.log = newRedactingLogger(captureLogger(&buf), c.redactor, "")
+	const msgID = "3EB0C0FFEE0123456789"
+	dir, err := mediacache.MessageDir(s.Dir(), retJID, msgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "Rechnung_Mueller.pdf")
+	writeCached(t, file, "PDF")
+	if runtime.GOOS == "windows" {
+		f, err := os.Open(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { f.Close() })
+	} else {
+		if err := os.Chmod(dir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+		if err := os.WriteFile(filepath.Join(dir, "probe"), nil, 0o600); err == nil {
+			t.Skip("a read-only directory does not stop deletion here (root?)")
+		}
+	}
+
+	c.removeMessageMediaLocked(retJID, msgID)
+
+	line := buf.String()
+	if !strings.Contains(line, "Failed to delete cached media") {
+		t.Fatalf("log = %q, want the warning", line)
+	}
+	for _, leak := range []string{"447700000099", retJID, hex.EncodeToString([]byte(msgID)), msgID, "Rechnung_Mueller.pdf"} {
+		if strings.Contains(line, leak) {
+			t.Errorf("log contains %q: %q", leak, line)
+		}
+	}
+	// The timestamp and the masked message ID ("…" + its last 6 characters)
+	// are shorter digit runs; a phone number is not.
+	if regexp.MustCompile(`\d{7,}`).MatchString(line) {
+		t.Errorf("log contains a long digit run: %q", line)
 	}
 }

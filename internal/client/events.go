@@ -10,6 +10,7 @@ import (
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/proto/waHistorySync"
+	"go.mau.fi/whatsmeow/proto/waWeb"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 
@@ -269,43 +270,17 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 				continue
 			}
 
-			msgTS := msg.Message.GetMessageTimestamp()
-			if msgTS == 0 {
+			if msg.Message.GetMessageTimestamp() == 0 {
 				continue
 			}
-			timestamp := time.Unix(int64(msgTS), 0)
 
-			// Determine sender and isFromMe from the message key.
-			var rawSenderJID, senderUser string
-			isFromMe := false
-			if msg.Message.Key != nil {
-				if msg.Message.Key.FromMe != nil {
-					isFromMe = *msg.Message.Key.FromMe
-				}
-				if !isFromMe && msg.Message.Key.Participant != nil && *msg.Message.Key.Participant != "" {
-					rawSenderJID = *msg.Message.Key.Participant
-					senderUser = strings.Split(rawSenderJID, "@")[0]
-				} else if isFromMe {
-					rawSenderJID = ownID + "@s.whatsapp.net"
-					senderUser = ownID
-				} else {
-					rawSenderJID = jid.String()
-					senderUser = jid.User
-				}
-			} else {
-				rawSenderJID = jid.String()
-				senderUser = jid.User
-			}
-
-			msgID := ""
-			if msg.Message.Key != nil && msg.Message.Key.ID != nil {
-				msgID = *msg.Message.Key.ID
-			}
+			hm := c.parseHistoryMessage(jid, ownID, msg.Message)
+			timestamp := hm.timestamp
 
 			nm := c.normalizeIncomingMessage(
-				rawChatJID, rawSenderJID, senderUser,
-				isGroup, isFromMe, ownID,
-				msgID, timestamp, msg.Message.Message,
+				rawChatJID, hm.rawSenderJID, hm.senderUser,
+				isGroup, hm.isFromMe, ownID,
+				hm.id, timestamp, hm.message,
 			)
 
 			c.log.Infof("Message content: %s, Media Type: %s", c.redactor.Body(nm.msg.Content), nm.msg.MediaType)
@@ -333,6 +308,70 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 	}
 
 	c.log.Infof("History sync complete. Stored %d messages.", syncedCount)
+}
+
+// historyMessage holds the fields of one history-sync message that
+// normalizeIncomingMessage needs, with the payload already unwrapped.
+type historyMessage struct {
+	rawSenderJID string
+	senderUser   string
+	isFromMe     bool
+	id           string
+	timestamp    time.Time
+	message      *waProto.Message
+}
+
+// parseHistoryMessage reads one history-sync message through whatsmeow's
+// ParseWebMessage, which unwraps ephemeral, view-once, document-with-caption,
+// edited and device-sent wrappers the same way live messages are unwrapped.
+// Without this, wrapped history messages arrive with no text or media and
+// are dropped. If ParseWebMessage fails (not logged in, group message with
+// no participant), it falls back to reading the message key directly.
+func (c *Client) parseHistoryMessage(chat types.JID, ownID string, webMsg *waWeb.WebMessageInfo) historyMessage {
+	evt, err := c.wa.ParseWebMessage(chat, webMsg)
+	if err != nil {
+		c.log.Debugf("History sync: ParseWebMessage failed for %s, reading the key directly: %v", webMsg.GetKey().GetID(), err)
+		return historyMessageFromKey(chat, ownID, webMsg)
+	}
+	hm := historyMessage{
+		rawSenderJID: evt.Info.Sender.String(),
+		senderUser:   evt.Info.Sender.User,
+		isFromMe:     evt.Info.IsFromMe,
+		id:           evt.Info.ID,
+		timestamp:    evt.Info.Timestamp,
+		message:      evt.Message,
+	}
+	// ParseWebMessage names our own LID as sender in @lid chats, which the
+	// LID map may not resolve. Keep our own messages under our phone number.
+	if hm.isFromMe && ownID != "" {
+		hm.rawSenderJID = ownID + "@" + types.DefaultUserServer
+		hm.senderUser = ownID
+	}
+	return hm
+}
+
+// historyMessageFromKey takes sender, direction and ID straight from the
+// message key. The payload is still unwrapped so the text and media of
+// wrapped messages survive.
+func historyMessageFromKey(chat types.JID, ownID string, webMsg *waWeb.WebMessageInfo) historyMessage {
+	hm := historyMessage{
+		rawSenderJID: chat.String(),
+		senderUser:   chat.User,
+		id:           webMsg.GetKey().GetID(),
+		timestamp:    time.Unix(int64(webMsg.GetMessageTimestamp()), 0),
+		message:      (&events.Message{RawMessage: webMsg.GetMessage()}).UnwrapRaw().Message,
+	}
+	if key := webMsg.GetKey(); key != nil {
+		hm.isFromMe = key.GetFromMe()
+		if !hm.isFromMe && key.GetParticipant() != "" {
+			hm.rawSenderJID = key.GetParticipant()
+			hm.senderUser = strings.Split(hm.rawSenderJID, "@")[0]
+		} else if hm.isFromMe {
+			hm.rawSenderJID = ownID + "@s.whatsapp.net"
+			hm.senderUser = ownID
+		}
+	}
+	return hm
 }
 
 // GetChatName determines the appropriate name for a chat. It checks the

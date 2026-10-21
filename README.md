@@ -10,6 +10,56 @@
 [![Sealjay/mcp-whatsapp MCP server](https://glama.ai/mcp/servers/Sealjay/mcp-whatsapp/badges/score.svg?)](https://glama.ai/mcp/servers/Sealjay/mcp-whatsapp)
 [![GitHub issues](https://img.shields.io/github/issues/Sealjay/mcp-whatsapp)](https://github.com/Sealjay/mcp-whatsapp/issues)
 
+## Kurz auf Deutsch
+
+Dieses Programm verbindet ein privates WhatsApp-Konto mit Claude.
+Claude kann damit Chats lesen, Bilder samt Bildunterschrift ansehen, Sprachnachrichten in Text umwandeln und Antworten vorschlagen.
+Abschicken muss man die Antworten selbst.
+
+Diese Fassung ist ein Fork von [Sealjay/mcp-whatsapp](https://github.com/Sealjay/mcp-whatsapp) und auf das Lesen ausgelegt.
+Mit dem Schalter `-read-only` bietet der Server nur Werkzeuge an, die nichts an WhatsApp schicken.
+
+Das Programm nutzt keinen offiziellen Zugang von WhatsApp.
+WhatsApp kann gekoppelte Geräte sperren, wenn es die Nutzung bemerkt.
+Wer nur liest, fällt weniger auf, eine Garantie gibt es aber nicht.
+
+### Wo es läuft
+
+Der Server läuft auf dem eigenen Rechner unter `http://127.0.0.1:8765`.
+Die Nachrichten liegen nur dort, in einer SQLite-Datenbank im Store-Ordner.
+Auch Sprachnachrichten werden auf dem eigenen Rechner umgewandelt, mit whisper.cpp.
+
+### Starten
+
+1. Bauen. Dafür braucht es Go 1.26 oder neuer, unter Windows zusätzlich `CGO_ENABLED=1` und einen C-Compiler (siehe [docs/windows.md](docs/windows.md)):
+   `go build -o bin/whatsapp-mcp.exe ./cmd/whatsapp-mcp`
+2. Starten: `bin/whatsapp-mcp.exe -read-only -store <Ordner> serve`
+3. Einmal koppeln: `http://127.0.0.1:8765/pair` im Browser öffnen und den QR-Code in WhatsApp unter „Verknüpfte Geräte“ scannen.
+   Nach etwa 20 Tagen verlangt WhatsApp eine neue Kopplung.
+4. In Claude Code eintragen: einen Server vom Typ `http` mit der Adresse `http://127.0.0.1:8765/mcp`.
+
+Unter Windows richtet `docs/windows/register-task.ps1` eine geplante Aufgabe ein, die den Server bei jeder Anmeldung startet.
+
+### Neue Version einspielen
+
+Eine laufende `.exe` lässt sich unter Windows nicht überschreiben.
+Deshalb die neue Fassung unter anderem Namen bauen, den Server beenden, die Dateien tauschen und neu starten.
+Vorher die `*.db`-Dateien im Store sichern, denn neue Versionen bauen die Datenbank beim ersten Start teilweise um.
+
+### Sprachnachrichten
+
+Für das Werkzeug `transcribe_media` braucht es whisper.cpp und ein Sprachmodell.
+Wo beides liegt, steht in den Umgebungsvariablen `WHATSAPP_MCP_WHISPER_BIN` und `WHATSAPP_MCP_WHISPER_MODEL`.
+Die Sprache steht in `WHATSAPP_MCP_WHISPER_LANG`, zum Beispiel `de`.
+
+### Weitere Unterlagen
+
+- Alle Werkzeuge, Schalter und Einstellungen: der englische Teil unten
+- Windows und Autostart: [docs/windows/README.md](docs/windows/README.md)
+- Aufbau des Codes: [CLAUDE.md](CLAUDE.md)
+
+---
+
 A single-binary Go [MCP](https://modelcontextprotocol.io/) server that wraps [whatsmeow](https://github.com/tulir/whatsmeow) to expose a personal WhatsApp account to LLMs. `whatsapp-mcp serve` runs as a lightweight HTTP daemon on `127.0.0.1:8765`; MCP clients (Claude Desktop, Cursor, Claude Code, etc.) connect to it via HTTP — no process spawning, no stdin/stdout juggling. Messages are cached in local SQLite and only travel to the model when the agent calls a tool.
 
 > **Unaffiliated.** This is an independent open-source project. It is not affiliated with, endorsed by, or otherwise associated with Meta Platforms, Inc., WhatsApp, or [whatsmeow](https://github.com/tulir/whatsmeow). "WhatsApp" is a trademark of Meta Platforms, Inc., used here nominatively to describe interoperability.

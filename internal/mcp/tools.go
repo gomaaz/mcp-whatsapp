@@ -1,5 +1,42 @@
 package mcp
 
+import (
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+)
+
+// readOnlyTools is the allowlist registered in read-only mode: tools that only
+// read the local cache or query WhatsApp without producing anything a contact
+// or group can see. Deliberately absent: mark_read / mark_chat_read (they send
+// read receipts) and get_group_invite_link (reset=true revokes the link).
+var readOnlyTools = map[string]bool{
+	"search_contacts":      true,
+	"list_messages":        true,
+	"list_chats":           true,
+	"get_chat":             true,
+	"get_message_context":  true,
+	"download_media":       true,
+	"request_sync":         true,
+	"get_status":           true,
+	"pairing_status":       true,
+	"list_groups":          true,
+	"get_group_info":       true,
+	"get_blocklist":        true,
+	"get_privacy_settings": true,
+	"get_poll_results":     true,
+	"is_on_whatsapp":       true,
+}
+
+// addTool registers tool unless the server is read-only and the tool is not on
+// the readOnlyTools allowlist. Every registration goes through here, so a newly
+// added tool stays hidden in read-only mode until it is allowlisted.
+func (s *Server) addTool(tool mcp.Tool, handler server.ToolHandlerFunc) {
+	if s.readOnly && !readOnlyTools[tool.Name] {
+		return
+	}
+	s.mcp.AddTool(tool, handler)
+}
+
 // registerTools wires every MCP tool to the bound WhatsApp client.
 //
 // Tool registrations are split by domain:

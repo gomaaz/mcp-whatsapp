@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"slices"
 	"sort"
 	"testing"
 )
@@ -149,5 +150,55 @@ func TestToolsByDomain(t *testing.T) {
 				t.Errorf("domain %s: expected tool %q not registered", file, name)
 			}
 		}
+	}
+}
+
+// expectedReadOnlyToolNames is the exact tool surface in read-only mode. Kept
+// separate from readOnlyTools on purpose: a change to the allowlist must be
+// made in both places, which makes widening it a deliberate act.
+var expectedReadOnlyToolNames = []string{
+	"download_media",
+	"get_blocklist",
+	"get_chat",
+	"get_group_info",
+	"get_message_context",
+	"get_poll_results",
+	"get_privacy_settings",
+	"get_status",
+	"is_on_whatsapp",
+	"list_chats",
+	"list_groups",
+	"list_messages",
+	"pairing_status",
+	"request_sync",
+	"search_contacts",
+}
+
+func registeredToolNames(s *Server) []string {
+	names := make([]string, 0, len(s.MCP().ListTools()))
+	for name := range s.MCP().ListTools() {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func TestNewServer_ReadOnlyRegistersOnlyAllowlist(t *testing.T) {
+	s := NewServer(nil, nil, WithReadOnly(true))
+	got := registeredToolNames(s)
+	if !slices.Equal(got, expectedReadOnlyToolNames) {
+		t.Fatalf("read-only tools = %v\nwant %v", got, expectedReadOnlyToolNames)
+	}
+	for _, name := range []string{"send_message", "mark_read", "mark_chat_read", "get_group_invite_link", "delete_message"} {
+		if s.MCP().GetTool(name) != nil {
+			t.Errorf("tool %q registered in read-only mode", name)
+		}
+	}
+}
+
+func TestNewServer_ReadOnlyOffRegistersAllTools(t *testing.T) {
+	got := registeredToolNames(NewServer(nil, nil, WithReadOnly(false)))
+	if !slices.Equal(got, expectedToolNames) {
+		t.Fatalf("tools = %v\nwant %v", got, expectedToolNames)
 	}
 }

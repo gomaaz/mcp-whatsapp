@@ -34,6 +34,9 @@ Commands:
 Global flags (before the command):
   -store DIR   Directory holding messages.db and whatsapp.db (default: ./store)
   -debug       Show full JIDs and message bodies in logs (default: redacted)
+  -read-only   Register only tools without outbound effect: no sending, editing,
+               deleting, read receipts or group/privacy changes
+               (env WHATSAPP_MCP_READ_ONLY=1; the flag wins when both are set)
   -version     Print version and exit
 
 Serve-specific flags (after 'serve'):
@@ -61,16 +64,25 @@ func main() {
 	var (
 		storeDir string
 		debug    bool
+		readOnly bool
 	)
 	fs := flag.NewFlagSet("whatsapp-mcp", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.StringVar(&storeDir, "store", "./store", "directory holding messages.db and whatsapp.db")
 	fs.BoolVar(&debug, "debug", false, "show full JIDs and message bodies in logs (default: redacted)")
+	fs.BoolVar(&readOnly, "read-only", false, "register only tools without outbound effect (env WHATSAPP_MCP_READ_ONLY=1)")
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		os.Exit(2)
 	}
+	readOnlySet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "read-only" {
+			readOnlySet = true
+		}
+	})
+	readOnly = resolveReadOnly(readOnlySet, readOnly, os.Getenv("WHATSAPP_MCP_READ_ONLY"))
 	args := fs.Args()
 	if len(args) == 0 {
 		fmt.Fprint(os.Stderr, usage)
@@ -88,7 +100,7 @@ func main() {
 	case "login":
 		code = runLogin(storeDir, redactor, rest)
 	case "serve":
-		code = runServe(storeDir, redactor, rest)
+		code = runServe(storeDir, redactor, readOnly, rest)
 	case "smoke":
 		code = runSmoke(storeDir, redactor, rest)
 	case "help", "-h", "--help":
@@ -99,4 +111,14 @@ func main() {
 		code = 2
 	}
 	os.Exit(code)
+}
+
+// resolveReadOnly applies the -read-only / WHATSAPP_MCP_READ_ONLY precedence:
+// an explicitly passed flag (true or false) wins, otherwise the env var turns
+// read-only mode on when set to "1".
+func resolveReadOnly(flagSet, flagValue bool, env string) bool {
+	if flagSet {
+		return flagValue
+	}
+	return env == "1"
 }

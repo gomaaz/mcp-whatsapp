@@ -21,9 +21,21 @@ type pairingCache interface {
 // Server holds the MCP server, its bound WhatsApp client, and an optional
 // pairing cache (used only by pairing_status).
 type Server struct {
-	client *client.Client
-	mcp    *server.MCPServer
-	cache  pairingCache
+	client   *client.Client
+	mcp      *server.MCPServer
+	cache    pairingCache
+	readOnly bool
+}
+
+// Option configures a Server at construction time.
+type Option func(*Server)
+
+// WithReadOnly restricts registration to the readOnlyTools allowlist, so the
+// server exposes no tool that sends, edits, acks or changes anything other
+// people can see. Enforced server-side: a client cannot call what is not
+// registered.
+func WithReadOnly(on bool) Option {
+	return func(s *Server) { s.readOnly = on }
 }
 
 // NewServer constructs an MCP server with all tools registered against the
@@ -33,13 +45,16 @@ type Server struct {
 // -ldflags build version so the two cannot drift.
 var Version = "dev"
 
-func NewServer(c *client.Client, cache pairingCache) *Server {
+func NewServer(c *client.Client, cache pairingCache, opts ...Option) *Server {
 	mcpSrv := server.NewMCPServer(
 		"whatsapp",
 		Version,
 		server.WithToolCapabilities(true),
 	)
 	s := &Server{client: c, mcp: mcpSrv, cache: cache}
+	for _, opt := range opts {
+		opt(s)
+	}
 	s.registerTools()
 	s.registerResources()
 	return s

@@ -89,6 +89,7 @@ Paths outside the root, including symlinks that resolve outside it, are rejected
 - `-allow-remote`: bind a non-loopback address. Requires `WHATSAPP_MCP_TOKEN`, a bearer token for `/mcp` and `/pair/*`; `serve` exits without it.
 - `WHATSAPP_MCP_MEDIA_ROOT`: the file allowlist root above.
 - `WHATSAPP_MCP_DEBUG=1` or `-debug`: verbose logs (see [Debug logging](#debug-logging)).
+- `-read-only` (global, before the command) or `WHATSAPP_MCP_READ_ONLY=1`: register only the 15 tools without outbound effect (`search_contacts`, `list_messages`, `list_chats`, `get_chat`, `get_message_context`, `download_media`, `request_sync`, `get_status`, `pairing_status`, `list_groups`, `get_group_info`, `get_blocklist`, `get_privacy_settings`, `get_poll_results`, `is_on_whatsapp`). Nothing that sends, edits, deletes, sends read receipts or changes groups and privacy is reachable, whatever the client calls. `get_group_invite_link` is left out because it can reset the link. An explicit flag wins over the env var, e.g. `-read-only=false`.
 
 ## Running the daemon
 

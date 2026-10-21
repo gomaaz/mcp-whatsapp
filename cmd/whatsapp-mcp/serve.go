@@ -19,7 +19,7 @@ import (
 	"github.com/sealjay/mcp-whatsapp/internal/store"
 )
 
-func runServe(storeDir string, redactor *security.Redactor, args []string) int {
+func runServe(storeDir string, redactor *security.Redactor, readOnly bool, args []string) int {
 	var (
 		addr        string
 		allowRemote bool
@@ -111,7 +111,10 @@ func runServe(storeDir string, redactor *security.Redactor, args []string) int {
 		return 1
 	}
 
-	mcpServer := mcpsrv.NewServer(c, d.Cache())
+	mcpServer := mcpsrv.NewServer(c, d.Cache(), mcpsrv.WithReadOnly(readOnly))
+	if readOnly {
+		fmt.Fprintln(os.Stderr, "read-only mode: only tools without outbound effect are registered")
+	}
 	d.SetMCPMount(mcpServer.AttachHTTP)
 
 	fmt.Fprintf(os.Stderr, "whatsapp-mcp listening on http://%s (MCP at /mcp, pairing at /pair)\n", addr)

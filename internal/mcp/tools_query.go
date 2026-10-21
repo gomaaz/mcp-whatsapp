@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
@@ -55,6 +57,9 @@ type listMessagesArgs struct {
 	SenderPhoneNumber string `json:"sender_phone_number,omitempty"`
 	ChatJID           string `json:"chat_jid,omitempty"`
 	Query             string `json:"query,omitempty"`
+	FromMe            *bool  `json:"from_me,omitempty"`
+	MediaType         string `json:"media_type,omitempty"`
+	ExcludeGroups     bool   `json:"exclude_groups,omitempty"`
 	Limit             int    `json:"limit,omitempty"`
 	Page              int    `json:"page,omitempty"`
 	IncludeContext    *bool  `json:"include_context,omitempty"`
@@ -62,14 +67,21 @@ type listMessagesArgs struct {
 	ContextAfter      int    `json:"context_after,omitempty"`
 }
 
+// listMessagesMediaTypes are the accepted values of list_messages' media_type
+// argument: the media types the event handler stores, plus "none" for text.
+var listMessagesMediaTypes = []string{"image", "video", "audio", "document", store.MediaTypeNone}
+
 func (s *Server) registerListMessages() {
 	tool := mcp.NewTool("list_messages",
-		mcp.WithDescription(offlineSafePrefix+"Search and page through cached WhatsApp messages, optionally filtering by chat, sender, time range, and substring; can include surrounding context messages. Read-only; no side effects. Use get_message_context to expand around a single known message ID, or request_sync to backfill missing history. Returns a human-readable formatted text block listing matching messages."),
+		mcp.WithDescription(offlineSafePrefix+"Search and page through cached WhatsApp messages, optionally filtering by chat, sender, direction, media type, time range, and substring; can include surrounding context messages. Read-only; no side effects. Use get_message_context to expand around a single known message ID, or request_sync to backfill missing history. Returns a human-readable formatted text block, one line per message, each tagged with its `message_id` and `chat_jid`."),
 		mcp.WithString("after", mcp.Description("ISO-8601 UTC lower bound on message timestamp (inclusive)")),
 		mcp.WithString("before", mcp.Description("ISO-8601 UTC upper bound on message timestamp (inclusive)")),
 		mcp.WithString("sender_phone_number", mcp.Description("filter to messages sent by this phone or JID ("+jidDesc+")")),
 		mcp.WithString("chat_jid", mcp.Description("filter to messages in this chat ("+jidDesc+")")),
 		mcp.WithString("query", mcp.Description("case-insensitive substring to match within message body")),
+		mcp.WithBoolean("from_me", mcp.Description("direction filter: true keeps only messages you sent, false only incoming ones; omit for both")),
+		mcp.WithString("media_type", mcp.Enum(listMessagesMediaTypes...), mcp.Description("keep only messages with this attachment type: `image`, `video`, `audio`, `document`, or `none` for text-only; omit for all")),
+		mcp.WithBoolean("exclude_groups", mcp.DefaultBool(false), mcp.Description("if true, skip messages from group chats (defaults to false)")),
 		mcp.WithNumber("limit", mcp.DefaultNumber(20), mcp.Description("max messages to return (default 20, capped at 100 server-side)")),
 		mcp.WithNumber("page", mcp.DefaultNumber(0), mcp.Description("zero-based page index for paging through results (default 0)")),
 		mcp.WithBoolean("include_context", mcp.DefaultBool(true), mcp.Description("if true, attach a few surrounding messages to each match (defaults to true)")),
@@ -94,10 +106,16 @@ func (s *Server) registerListMessages() {
 		if ctxAfter > 20 {
 			ctxAfter = 20
 		}
+		if a.MediaType != "" && !slices.Contains(listMessagesMediaTypes, a.MediaType) {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid 'media_type' %q: must be one of %s", a.MediaType, strings.Join(listMessagesMediaTypes, ", "))), nil
+		}
 		params := store.ListMessagesParams{
 			SenderPhone:    a.SenderPhoneNumber,
 			ChatJID:        a.ChatJID,
 			Query:          a.Query,
+			FromMe:         a.FromMe,
+			MediaType:      a.MediaType,
+			ExcludeGroups:  a.ExcludeGroups,
 			Limit:          limit,
 			Page:           a.Page,
 			IncludeContext: a.IncludeContext == nil || *a.IncludeContext,

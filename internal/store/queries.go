@@ -13,14 +13,25 @@ import (
 // queryContextWindow.
 const listMessageColumns = "messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type"
 
+// MediaTypeNone is the MediaType filter value that selects text-only messages
+// (no media attachment).
+const MediaTypeNone = "none"
+
 // ListMessagesParams holds the filters accepted by ListMessages. Zero values
 // mean "unset" except for Limit, which defaults to 20 when <= 0.
 type ListMessagesParams struct {
-	After          time.Time
-	Before         time.Time
-	SenderPhone    string
-	ChatJID        string
-	Query          string
+	After       time.Time
+	Before      time.Time
+	SenderPhone string
+	ChatJID     string
+	Query       string
+	// FromMe restricts direction when non-nil: true keeps only own messages,
+	// false only incoming ones.
+	FromMe *bool
+	// MediaType keeps only messages with this media type ("image", "video",
+	// "audio", "document"); MediaTypeNone keeps only text messages.
+	MediaType      string
+	ExcludeGroups  bool
 	Limit          int
 	Page           int
 	IncludeContext bool
@@ -64,6 +75,21 @@ func (s *Store) ListMessages(ctx context.Context, params ListMessagesParams) ([]
 	if params.Query != "" {
 		whereClauses = append(whereClauses, "LOWER(messages.content) LIKE LOWER(?)")
 		args = append(args, "%"+params.Query+"%")
+	}
+	if params.FromMe != nil {
+		whereClauses = append(whereClauses, "messages.is_from_me = ?")
+		args = append(args, *params.FromMe)
+	}
+	switch params.MediaType {
+	case "":
+	case MediaTypeNone:
+		whereClauses = append(whereClauses, "COALESCE(messages.media_type, '') = ''")
+	default:
+		whereClauses = append(whereClauses, "messages.media_type = ?")
+		args = append(args, params.MediaType)
+	}
+	if params.ExcludeGroups {
+		whereClauses = append(whereClauses, "messages.chat_jid NOT LIKE '%@g.us'")
 	}
 
 	var b strings.Builder

@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -85,5 +86,47 @@ func TestPairingStatus_AwaitingQRGenerating(t *testing.T) {
 	}
 	if env["detail"] != "Generating pairing code…" {
 		t.Errorf("detail = %v, want generating message", env["detail"])
+	}
+}
+
+// list_messages advertises the direction, media-type and group filters.
+func TestListMessages_SchemaHasFilterArgs(t *testing.T) {
+	tool, ok := NewServer(nil, nil).MCP().ListTools()["list_messages"]
+	if !ok || tool == nil {
+		t.Fatal("list_messages not registered")
+	}
+	props := tool.Tool.InputSchema.Properties
+	for _, name := range []string{"from_me", "media_type", "exclude_groups"} {
+		if _, ok := props[name]; !ok {
+			t.Errorf("list_messages schema missing %q", name)
+		}
+	}
+	for _, name := range tool.Tool.InputSchema.Required {
+		if name == "from_me" || name == "media_type" || name == "exclude_groups" {
+			t.Errorf("%q must stay optional", name)
+		}
+	}
+}
+
+// An unknown media_type is rejected before the store is touched, so a nil
+// client is safe here.
+func TestListMessages_RejectsUnknownMediaType(t *testing.T) {
+	tool, ok := NewServer(nil, nil).MCP().ListTools()["list_messages"]
+	if !ok || tool == nil || tool.Handler == nil {
+		t.Fatal("list_messages not registered")
+	}
+	req := mcp.CallToolRequest{}
+	req.Params.Name = "list_messages"
+	req.Params.Arguments = map[string]any{"media_type": "sticker"}
+	res, err := tool.Handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("list_messages handler: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected tool error for media_type=sticker, got %+v", res)
+	}
+	text, ok := mcp.AsTextContent(res.Content[0])
+	if !ok || !strings.Contains(text.Text, "invalid 'media_type'") {
+		t.Fatalf("unexpected error content: %+v", res.Content)
 	}
 }

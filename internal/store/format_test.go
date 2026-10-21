@@ -24,8 +24,8 @@ func TestFormatMessage_FromMe(t *testing.T) {
 	if !strings.Contains(got, "From: Me:") {
 		t.Fatalf("expected 'From: Me:' in output, got %q", got)
 	}
-	if !strings.HasPrefix(got, "[2026-01-02 03:04:05]") {
-		t.Fatalf("expected timestamp prefix, got %q", got)
+	if !strings.HasPrefix(got, "[2026-01-02 03:04:05] [message_id=m1 chat_jid=447700000001@s.whatsapp.net] ") {
+		t.Fatalf("expected timestamp and ID prefix, got %q", got)
 	}
 	if !strings.HasSuffix(got, "\n") {
 		t.Fatalf("expected trailing newline, got %q", got)
@@ -64,9 +64,30 @@ func TestFormatMessage_MediaPrefix(t *testing.T) {
 		MediaType: "image",
 	}
 	got := s.FormatMessage(ctx, m, false)
-	wantPrefix := "[image - Message ID: m3 - Chat JID: 447700000001@s.whatsapp.net]"
-	if !strings.Contains(got, wantPrefix) {
-		t.Fatalf("expected media prefix %q in output, got %q", wantPrefix, got)
+	want := "[2026-01-02 03:04:05] [message_id=m3 chat_jid=447700000001@s.whatsapp.net] From: Me: [image] caption\n"
+	if got != want {
+		t.Fatalf("FormatMessage media:\n got %q\nwant %q", got, want)
+	}
+}
+
+// Text messages carry the same ID tag as media messages, so any line can be
+// handed to get_message_context.
+func TestFormatMessage_TextLineCarriesIDs(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	m := Message{
+		ID:        "m5",
+		ChatJID:   "447700000001@s.whatsapp.net",
+		Sender:    "447700000001@s.whatsapp.net", // Alice, per seed data
+		Content:   "plain text",
+		Timestamp: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+		ChatName:  "Alice",
+	}
+	got := s.FormatMessage(ctx, m, true)
+	want := "[2026-01-02 03:04:05] [message_id=m5 chat_jid=447700000001@s.whatsapp.net] Chat: Alice From: Alice: plain text\n"
+	if got != want {
+		t.Fatalf("FormatMessage text:\n got %q\nwant %q", got, want)
 	}
 }
 

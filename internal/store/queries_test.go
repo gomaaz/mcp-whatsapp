@@ -627,3 +627,117 @@ func TestFormatMessage_ChatUsesAddressBookName(t *testing.T) {
 		t.Fatalf("expected address-book chat name, got %q", out)
 	}
 }
+
+// messageIDs returns the IDs of msgs, sorted, for order-independent checks.
+func messageIDs(msgs []Message) []string {
+	ids := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		ids = append(ids, m.ID)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func TestListMessages_FromMeFilter(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	own, incoming := true, false
+	mine, err := s.ListMessages(ctx, ListMessagesParams{FromMe: &own, Limit: 50})
+	if err != nil {
+		t.Fatalf("ListMessages from_me=true: %v", err)
+	}
+	if got, want := strings.Join(messageIDs(mine), ","), "a2,a4,b2,g2"; got != want {
+		t.Fatalf("from_me=true ids = %s, want %s", got, want)
+	}
+
+	theirs, err := s.ListMessages(ctx, ListMessagesParams{FromMe: &incoming, Limit: 50})
+	if err != nil {
+		t.Fatalf("ListMessages from_me=false: %v", err)
+	}
+	if got, want := strings.Join(messageIDs(theirs), ","), "a1,a3,a5,b1,b3,g1,g3,g4"; got != want {
+		t.Fatalf("from_me=false ids = %s, want %s", got, want)
+	}
+}
+
+func TestListMessages_MediaTypeFilter(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// A row with a NULL media_type must still count as text-only.
+	if _, err := s.db.Exec(`INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me, media_type)
+		VALUES ('n1', '447700000002@s.whatsapp.net', '447700000002@s.whatsapp.net', 'null media', '2026-01-08 09:00:00', 0, NULL)`); err != nil {
+		t.Fatalf("insert NULL media row: %v", err)
+	}
+
+	images, err := s.ListMessages(ctx, ListMessagesParams{MediaType: "image", Limit: 50})
+	if err != nil {
+		t.Fatalf("ListMessages media_type=image: %v", err)
+	}
+	if got, want := strings.Join(messageIDs(images), ","), "a4"; got != want {
+		t.Fatalf("media_type=image ids = %s, want %s", got, want)
+	}
+
+	videos, err := s.ListMessages(ctx, ListMessagesParams{MediaType: "video", Limit: 50})
+	if err != nil {
+		t.Fatalf("ListMessages media_type=video: %v", err)
+	}
+	if len(videos) != 0 {
+		t.Fatalf("media_type=video should match nothing, got %v", messageIDs(videos))
+	}
+
+	text, err := s.ListMessages(ctx, ListMessagesParams{MediaType: MediaTypeNone, Limit: 50})
+	if err != nil {
+		t.Fatalf("ListMessages media_type=none: %v", err)
+	}
+	if len(text) != 12 {
+		t.Fatalf("media_type=none should return 12 text messages, got %d: %v", len(text), messageIDs(text))
+	}
+	for _, m := range text {
+		if m.MediaType != "" {
+			t.Fatalf("media_type=none returned media message %q (%s)", m.ID, m.MediaType)
+		}
+	}
+}
+
+func TestListMessages_ExcludeGroups(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	msgs, err := s.ListMessages(ctx, ListMessagesParams{ExcludeGroups: true, Limit: 50})
+	if err != nil {
+		t.Fatalf("ListMessages exclude_groups: %v", err)
+	}
+	if got, want := strings.Join(messageIDs(msgs), ","), "a1,a2,a3,a4,a5,b1,b2,b3"; got != want {
+		t.Fatalf("exclude_groups ids = %s, want %s", got, want)
+	}
+}
+
+// The new filters combine with each other (AND) and leave the default
+// behaviour unchanged when unset.
+func TestListMessages_CombinedFiltersAndDefaults(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	incoming := false
+	msgs, err := s.ListMessages(ctx, ListMessagesParams{
+		FromMe:        &incoming,
+		MediaType:     MediaTypeNone,
+		ExcludeGroups: true,
+		Limit:         50,
+	})
+	if err != nil {
+		t.Fatalf("ListMessages combined: %v", err)
+	}
+	if got, want := strings.Join(messageIDs(msgs), ","), "a1,a3,a5,b1,b3"; got != want {
+		t.Fatalf("combined ids = %s, want %s", got, want)
+	}
+
+	all, err := s.ListMessages(ctx, ListMessagesParams{Limit: 50})
+	if err != nil {
+		t.Fatalf("ListMessages unfiltered: %v", err)
+	}
+	if len(all) != 12 {
+		t.Fatalf("unfiltered should return all 12 seeded messages, got %d", len(all))
+	}
+}

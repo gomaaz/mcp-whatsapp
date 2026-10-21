@@ -5,13 +5,19 @@ import (
 	"strings"
 )
 
-// FormatMessage renders a single message in the legacy textual format expected
-// by downstream Claude clients.
+// FormatMessage renders a single message in the textual format expected by
+// downstream Claude clients. Every line carries the message ID and chat JID so
+// any message (text or media) can be passed on to get_message_context or
+// download_media.
 func (s *Store) FormatMessage(ctx context.Context, m Message, showChatInfo bool) string {
 	var b strings.Builder
 
 	b.WriteString("[")
 	b.WriteString(m.Timestamp.Format("2006-01-02 15:04:05"))
+	b.WriteString("] [message_id=")
+	b.WriteString(m.ID)
+	b.WriteString(" chat_jid=")
+	b.WriteString(m.ChatJID)
 	b.WriteString("] ")
 
 	if showChatInfo && m.ChatName != "" {
@@ -22,7 +28,7 @@ func (s *Store) FormatMessage(ctx context.Context, m Message, showChatInfo bool)
 
 	contentPrefix := ""
 	if m.MediaType != "" {
-		contentPrefix = "[" + m.MediaType + " - Message ID: " + m.ID + " - Chat JID: " + m.ChatJID + "] "
+		contentPrefix = "[" + m.MediaType + "] "
 	}
 
 	var senderName string
